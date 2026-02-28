@@ -704,6 +704,11 @@ function hardPasteValuesInPoSheets_(ss, sheetNames) {
 /***** INVOICE -> GENERATED REPORT IMPORTS *****/
 function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, reportFilesByKey, hasSb20) {
   const importedInto = [];
+  const importedTabsByReport = {
+    'DTSC-ALL': [],
+    'DTSC': [],
+    'NETCOST': [],
+  };
   const invoiceSs = SpreadsheetApp.openById(invoiceSpreadsheetId);
 
   const poSheet = invoiceSs.getSheetByName('PO');
@@ -711,6 +716,7 @@ function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, r
     const dtscAllSs = SpreadsheetApp.openById(reportFilesByKey['DTSC-ALL'].getId());
     const tabName = buildTargetTabName_('PO', invoiceNo);
     copySheetIntoReport_(poSheet, dtscAllSs, tabName);
+    importedTabsByReport['DTSC-ALL'].push(tabName);
     importedInto.push(`DTSC-ALL:${tabName}`);
   }
 
@@ -719,6 +725,7 @@ function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, r
     const dtscSs = SpreadsheetApp.openById(reportFilesByKey['DTSC'].getId());
     const tabName = buildTargetTabName_('EWASTE-PO', invoiceNo);
     copySheetIntoReport_(ewasteSheet, dtscSs, tabName);
+    importedTabsByReport['DTSC'].push(tabName);
     importedInto.push(`DTSC:${tabName}`);
   }
 
@@ -728,11 +735,33 @@ function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, r
       const netcostSs = SpreadsheetApp.openById(reportFilesByKey['NETCOST'].getId());
       const tabName = buildTargetTabName_('SB20-PO', invoiceNo);
       copySheetIntoReport_(sb20Sheet, netcostSs, tabName);
+      importedTabsByReport['NETCOST'].push(tabName);
       importedInto.push(`NETCOST:${tabName}`);
     }
   }
 
+  Object.keys(importedTabsByReport).forEach((reportKey) => {
+    if (!reportFilesByKey[reportKey]) return;
+    const reportSs = SpreadsheetApp.openById(reportFilesByKey[reportKey].getId());
+    updateImportedDataSheet_(reportSs, importedTabsByReport[reportKey]);
+  });
+
   return importedInto;
+}
+
+function updateImportedDataSheet_(reportSpreadsheet, importedTabNames) {
+  let importedDataSheet = reportSpreadsheet.getSheetByName('IMPORTED-DATA');
+  if (!importedDataSheet) {
+    importedDataSheet = reportSpreadsheet.insertSheet('IMPORTED-DATA');
+  }
+
+  importedDataSheet.getRange('A2:A31').clearContent();
+
+  const names = (importedTabNames || []).slice(0, 30);
+  if (!names.length) return;
+
+  const values = names.map(name => [name]);
+  importedDataSheet.getRange(2, 1, values.length, 1).setValues(values);
 }
 
 function copySheetIntoReport_(sourceSheet, targetSpreadsheet, targetTabName) {
