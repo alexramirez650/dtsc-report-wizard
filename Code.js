@@ -315,6 +315,7 @@ function startReportWizardCore_(opts) {
     const folderRename = renameGeneratedReportsFolderByInvoicePeriod_(
       generatedReportsFolder,
       testMode,
+      customerNumber,
       processedInvoiceNos
     );
     if (folderRename.warning) {
@@ -478,6 +479,7 @@ function startReportWizardWithInputs_(params, runId) {
   const folderRename = renameGeneratedReportsFolderByInvoicePeriod_(
     generatedReportsFolder,
     testMode,
+    customerNumber,
     processedInvoiceNos
   );
   if (folderRename.warning) {
@@ -985,7 +987,7 @@ function renameReportsByInvoicePeriod_(reportFilesByKey, customerNumber, process
   };
 }
 
-function renameGeneratedReportsFolderByInvoicePeriod_(folder, testMode, processedInvoiceNos) {
+function renameGeneratedReportsFolderByInvoicePeriod_(folder, testMode, customerNumber, processedInvoiceNos) {
   const resolved = resolveSingleInvoicePeriodForNaming_(processedInvoiceNos);
   if (!resolved.period) {
     return {
@@ -997,7 +999,10 @@ function renameGeneratedReportsFolderByInvoicePeriod_(folder, testMode, processe
 
   const periodLabel = `${monthNumberToName_(resolved.period.month)}-${resolved.period.year}`;
   const baseName = testMode ? TEST_FOLDER_NAME : LIVE_FOLDER_NAME;
-  const folderName = `${baseName} - ${periodLabel}`;
+  const customerTag = buildCustomerTag_(customerNumber);
+  const folderName = customerTag
+    ? `${customerTag} - ${baseName} - ${periodLabel}`
+    : `${baseName} - ${periodLabel}`;
 
   if (folder.getName() !== folderName) {
     folder.setName(folderName);
