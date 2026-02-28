@@ -239,6 +239,11 @@ function startReportWizardCore_(opts) {
     setStatus_('Copying template report files...', 32, runId);
     const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
 
+    if (reportFilesByKey['DTSC-ALL']) {
+      setStatus_('Preparing DTSC-ALL item lookup data...', 35, runId);
+      hydrateDtscAllItemLookupData_(reportFilesByKey['DTSC-ALL']);
+    }
+
     setStatus_('Prompting for invoice number(s)...', 38, runId);
     const invResp = ui.prompt(
       'Invoice Number(s)',
@@ -418,6 +423,11 @@ function startReportWizardWithInputs_(params, runId) {
 
   setStatus_('Copying template report files...', 32, runId);
   const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
+
+  if (reportFilesByKey['DTSC-ALL']) {
+    setStatus_('Preparing DTSC-ALL item lookup data...', 35, runId);
+    hydrateDtscAllItemLookupData_(reportFilesByKey['DTSC-ALL']);
+  }
 
   setStatus_(`Searching ${invoiceInputs.length} invoice folder(s)...`, 45, runId);
   const found = [];
@@ -911,6 +921,108 @@ function sanitizeTabSuffix_(text) {
   return String(text || '')
     .replace(/[\\\/\?\*\[\]:]/g, '-')
     .trim();
+}
+
+function hydrateDtscAllItemLookupData_(dtscAllFile) {
+  const reportSs = SpreadsheetApp.openById(dtscAllFile.getId());
+  const importedDataSheet = reportSs.getSheetByName('IMPORTED-DATA');
+  if (!importedDataSheet) return;
+
+  const sourceSpreadsheetId = String(importedDataSheet.getRange('A43').getDisplayValue() || '').trim();
+  const sourceSheetName = String(importedDataSheet.getRange('B43').getDisplayValue() || '').trim();
+  const startRow = 51;
+  const startCol = 1;
+  const numCols = 3;
+  const maxRows = importedDataSheet.getMaxRows() - startRow + 1;
+
+  importedDataSheet.getRange(startRow, startCol, maxRows, numCols).clearContent();
+
+  if (sourceSpreadsheetId && sourceSheetName) {
+    const sourceSs = SpreadsheetApp.openById(sourceSpreadsheetId);
+    const sourceSheet = sourceSs.getSheetByName(sourceSheetName);
+    if (!sourceSheet) {
+      throw new Error(`Source lookup sheet not found: ${sourceSheetName}`);
+    }
+
+    const lastRow = sourceSheet.getLastRow();
+    if (lastRow < 2) return;
+
+    const values = sourceSheet.getRange(2, 1, lastRow - 1, numCols).getValues();
+    const trimmed = trimTrailingEmptyRows_(values);
+    const rows = trimmed.filter(row => row.some(cell => String(cell || '').trim() !== ''));
+    if (!rows.length) return;
+
+    const writeValues = rows.slice(0, maxRows);
+    importedDataSheet.getRange(startRow, startCol, writeValues.length, numCols).setValues(writeValues);
+    return;
+  }
+
+  const formulas = importedDataSheet.getRange(startRow, startCol, 1, numCols).getFormulas()[0];
+
+  for (let i = 0; i < numCols; i++) {
+    const formula = String(formulas[i] || '').trim();
+    if (!formula) continue;
+
+    const parsed = parseImportRangeFromFormula_(formula);
+    if (!parsed) continue;
+
+    const sourceValues = readImportRangeValues_(parsed.spreadsheetId, parsed.rangeA1);
+    const trimmed = trimTrailingEmptyRows_(sourceValues);
+    const columnValues = trimmed
+      .map(row => [row[0]])
+      .filter(row => String(row[0] || '').trim() !== '');
+
+    if (!columnValues.length) continue;
+
+    importedDataSheet
+      .getRange(startRow, startCol + i, columnValues.length, 1)
+      .setValues(columnValues);
+  }
+}
+
+function parseImportRangeFromFormula_(formula) {
+  const text = String(formula || '');
+  const match = text.match(/IMPORTRANGE\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/i);
+  if (!match) return null;
+
+  return {
+    spreadsheetId: match[1],
+    rangeA1: match[2],
+  };
+}
+
+function readImportRangeValues_(spreadsheetId, rangeA1) {
+  const sourceSs = SpreadsheetApp.openById(spreadsheetId);
+  const raw = String(rangeA1 || '').trim();
+  if (!raw) return [];
+
+  const bangIndex = raw.indexOf('!');
+  if (bangIndex < 0) {
+    const firstSheet = sourceSs.getSheets()[0];
+    return firstSheet ? firstSheet.getRange(raw).getValues() : [];
+  }
+
+  const sheetToken = raw.substring(0, bangIndex).trim();
+  const rangeToken = raw.substring(bangIndex + 1).trim();
+  const sheetName = sheetToken.replace(/^'(.+)'$/, '$1');
+  const sourceSheet = sourceSs.getSheetByName(sheetName);
+  if (!sourceSheet) {
+    throw new Error(`Source lookup sheet not found: ${sheetName}`);
+  }
+
+  return sourceSheet.getRange(rangeToken).getValues();
+}
+
+function trimTrailingEmptyRows_(values) {
+  const rows = values || [];
+  let last = -1;
+
+  for (let i = 0; i < rows.length; i++) {
+    const hasData = (rows[i] || []).some(cell => String(cell || '').trim() !== '');
+    if (hasData) last = i;
+  }
+
+  return last >= 0 ? rows.slice(0, last + 1) : [];
 }
 
 function parseInvoiceMonthYear_(invoiceNo) {
