@@ -4,10 +4,22 @@
     <base target="_top">
     <style>
       body { font-family: Arial, sans-serif; margin: 12px; }
-      .row { display: flex; gap: 8px; margin-bottom: 10px; }
+      .row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+      .col { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
       button { padding: 8px 10px; cursor: pointer; }
       button:disabled { opacity: 0.6; cursor: not-allowed; }
+      label { font-size: 12px; color: #374151; font-weight: 600; }
+      input, textarea, select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-family: Arial, sans-serif;
+      }
+      textarea { min-height: 72px; resize: vertical; }
       .meta { font-size: 12px; color: #374151; margin: 8px 0; }
+      .hint { font-size: 11px; color: #6b7280; margin-top: -4px; }
       .bar-wrap {
         width: 100%;
         height: 12px;
@@ -36,13 +48,35 @@
     </style>
   </head>
   <body>
+    <div class="col">
+      <label for="customerNumber">Customer Number</label>
+      <input id="customerNumber" placeholder="#199-1" />
+
+      <label for="invoiceNumbers">Invoice Number(s)</label>
+      <textarea id="invoiceNumbers" placeholder="#199-1-01-08-26&#10;#199-1-01-15-26"></textarea>
+      <div class="hint">Use comma or new line for multiple invoices.</div>
+
+      <div class="row">
+        <label for="hasSb20" style="font-weight:normal;display:flex;gap:6px;align-items:center;">
+          <input id="hasSb20" type="checkbox" style="width:auto;" />
+          Customer has SB-20 items
+        </label>
+      </div>
+
+      <label for="mode">Run Mode</label>
+      <select id="mode">
+        <option value="test">TEST</option>
+        <option value="live">LIVE</option>
+      </select>
+    </div>
+
     <div class="row">
-      <button id="btnTest" onclick="startRun(true)">Run TEST</button>
-      <button id="btnLive" onclick="startRun(false)">Run LIVE</button>
+      <button id="btnStart" onclick="startRun()">Start Run</button>
       <button id="btnStop" onclick="stopPolling()" disabled>Stop Poll</button>
     </div>
 
     <div class="meta" id="meta">Idle</div>
+    <div class="meta" id="heartbeat">Last update: -</div>
     <div class="bar-wrap"><div class="bar" id="bar"></div></div>
     <div class="log" id="log"></div>
 
@@ -50,11 +84,11 @@
       let runId = null;
       let pollHandle = null;
       let isRunning = false;
+      let lastLogAt = null;
 
       function setUiRunning(running) {
         isRunning = running;
-        document.getElementById('btnTest').disabled = running;
-        document.getElementById('btnLive').disabled = running;
+        document.getElementById('btnStart').disabled = running;
         document.getElementById('btnStop').disabled = !running;
       }
 
@@ -68,18 +102,48 @@
         const mode = state.mode || '-';
         const status = state.status || '-';
         const progress = Number(state.progress || 0);
+        const logs = state.logs || [];
         document.getElementById('meta').textContent =
           `Mode: ${mode} | Status: ${status} | Progress: ${progress}%`;
         document.getElementById('bar').style.width = progress + '%';
-        setLog(state.logs || []);
+        setLog(logs);
+
+        if (logs.length) {
+          lastLogAt = Date.now();
+        }
+        updateHeartbeat();
       }
 
-      function startRun(testMode) {
+      function buildParams() {
+        const customerNumber = document.getElementById('customerNumber').value.trim();
+        const invoiceNumbers = document.getElementById('invoiceNumbers').value.trim();
+        const hasSb20 = document.getElementById('hasSb20').checked;
+        const mode = document.getElementById('mode').value;
+        const testMode = mode !== 'live';
+
+        if (!customerNumber) throw new Error('Customer Number is required.');
+        if (!invoiceNumbers) throw new Error('Invoice Number(s) are required.');
+
+        return { customerNumber, invoiceNumbers, hasSb20, testMode };
+      }
+
+      function startRun() {
         if (isRunning) return;
+
+        let params;
+        try {
+          params = buildParams();
+        } catch (err) {
+          document.getElementById('meta').textContent = err.message;
+          return;
+        }
+
         setUiRunning(true);
         document.getElementById('meta').textContent = 'Starting...';
         document.getElementById('bar').style.width = '0%';
         document.getElementById('log').textContent = '';
+        document.getElementById('heartbeat').textContent = 'Last update: starting...';
+        lastLogAt = Date.now();
 
         google.script.run
           .withSuccessHandler((newRunId) => {
@@ -90,7 +154,7 @@
                 console.error(err);
                 pollOnce();
               })
-              .runWizardWithProgress(runId, testMode);
+              .runWizardWithParams(runId, params);
 
             pollHandle = setInterval(pollOnce, 1200);
             pollOnce();
@@ -100,7 +164,19 @@
             document.getElementById('meta').textContent = 'Failed to start run';
             document.getElementById('log').textContent = String(err);
           })
-          .beginWizardRun(testMode);
+          .beginWizardRunWithParams(params);
+      }
+
+      function updateHeartbeat() {
+        if (!lastLogAt) {
+          document.getElementById('heartbeat').textContent = 'Last update: -';
+          return;
+        }
+        const ageSec = Math.floor((Date.now() - lastLogAt) / 1000);
+        const text = ageSec <= 10
+          ? `Last update: ${ageSec}s ago`
+          : `Last update: ${ageSec}s ago (working...)`;
+        document.getElementById('heartbeat').textContent = text;
       }
 
       function pollOnce() {
@@ -122,7 +198,10 @@
         if (pollHandle) clearInterval(pollHandle);
         pollHandle = null;
         setUiRunning(false);
+        updateHeartbeat();
       }
+
+      setInterval(updateHeartbeat, 1000);
     </script>
   </body>
 </html>

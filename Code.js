@@ -29,7 +29,7 @@ const PO_SHEET_SOURCES = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Reports')
-    .addItem('Open Wizard Sidebar', 'openWizardSidebar')
+    .addItem('Open Progress Window', 'openWizardSidebar')
     .addSeparator()
     .addItem('Start Report Wizard', 'startReportWizard')
     .addItem('Start Report Wizard (TEST)', 'startReportWizard_TEST')
@@ -39,9 +39,10 @@ function onOpen() {
 
 function openWizardSidebar() {
   const html = HtmlService.createHtmlOutputFromFile('sidebar')
-    .setTitle('Report Wizard')
-    .setWidth(360);
-  SpreadsheetApp.getUi().showSidebar(html);
+    .setTitle('Report Wizard Progress')
+    .setWidth(420)
+    .setHeight(560);
+  SpreadsheetApp.getUi().showModelessDialog(html, 'Report Wizard Progress');
 }
 
 function startReportWizard() {
@@ -92,6 +93,26 @@ function getWizardRunStatus(runId) {
     error: 'Run not found',
     mode: '-',
   };
+}
+
+function beginWizardRunWithParams(params) {
+  const safe = params || {};
+  const testMode = !!safe.testMode;
+  const runId = beginWizardRun(testMode);
+  return runId;
+}
+
+function runWizardWithParams(runId, params) {
+  const safe = params || {};
+  try {
+    setStatus_('Starting window-run workflow...', 2, runId);
+    startReportWizardWithInputs_(safe, runId);
+    setStatus_('Completed successfully.', 100, runId);
+    finishRun_(runId);
+  } catch (error) {
+    failRun_(runId, error);
+    throw error;
+  }
 }
 
 function saveRunState_(runId, state) {
@@ -305,6 +326,107 @@ function startReportWizardCore_(opts) {
   }
 }
 
+function startReportWizardWithInputs_(params, runId) {
+  const customerNumber = String(params.customerNumber || '').trim();
+  const hasSb20 = !!params.hasSb20;
+  const testMode = !!params.testMode;
+  const invoiceInputs = String(params.invoiceNumbers || '')
+    .split(/[\n,]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (!customerNumber) {
+    throw new Error('Customer Number is required.');
+  }
+  if (!invoiceInputs.length) {
+    throw new Error('At least one Invoice Number is required.');
+  }
+
+  setStatus_('Connecting to Purchases folder...', 5, runId);
+  const purchasesRoot = DriveApp.getFolderById(PURCHASES_FOLDER_ID);
+
+  setStatus_('Finding customer folder...', 12, runId);
+  const customerFolder = findCustomerPoFolder_(purchasesRoot, customerNumber);
+  if (!customerFolder) {
+    throw new Error(`Customer folder not found for ${customerNumber}.`);
+  }
+
+  const generatedFolderName = testMode ? TEST_FOLDER_NAME : LIVE_FOLDER_NAME;
+  setStatus_(`Preparing "${generatedFolderName}" folder...`, 24, runId);
+  const generatedReportsFolder = getOrCreateSubfolder_(customerFolder, generatedFolderName);
+
+  const templatesToUse = hasSb20
+    ? REPORT_TEMPLATES
+    : {
+        'DTSC-ALL': REPORT_TEMPLATES['DTSC-ALL'],
+        'DTSC': REPORT_TEMPLATES['DTSC'],
+      };
+
+  setStatus_('Copying template report files...', 32, runId);
+  const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
+
+  setStatus_(`Searching ${invoiceInputs.length} invoice folder(s)...`, 45, runId);
+  const found = [];
+  const notFound = [];
+  const processed = [];
+
+  invoiceInputs.forEach((invoiceNo) => {
+    const match = findInvoiceSheetInPurchases_(purchasesRoot, invoiceNo, customerNumber);
+    if (match) found.push({ invoiceNo, folder: match.folder, file: match.file });
+    else notFound.push(invoiceNo);
+  });
+
+  if (found.length) {
+    setStatus_(`Matched ${found.length} invoice(s).`, 52, runId);
+
+    found.forEach(item => {
+      setStatus_(`Processing invoice ${item.invoiceNo}...`, null, runId);
+      const invoiceFileToProcess = testMode
+        ? createInvoiceTestCopy_(item.file, generatedReportsFolder, customerNumber)
+        : item.file;
+
+      const refreshed = upsertPoSheetsInInvoice_(
+        invoiceFileToProcess.getId(),
+        item.invoiceNo,
+        hasSb20,
+        runId,
+        { interactive: false }
+      );
+
+      if (!refreshed) {
+        processed.push(`Skipped (missing PO): ${item.invoiceNo}`);
+        return;
+      }
+
+      const imported = importInvoiceTabsToGeneratedReports_(
+        invoiceFileToProcess.getId(),
+        item.invoiceNo,
+        reportFilesByKey,
+        hasSb20
+      );
+
+      processed.push(`${item.invoiceNo} -> ${imported.join(', ') || 'No import tabs found'}`);
+    });
+  }
+
+  const copiedReportKeys = Object.keys(reportFilesByKey);
+  let summary =
+    `${testMode ? 'TEST' : 'LIVE'} complete.\n\n` +
+    `Generated folder:\n${generatedReportsFolder.getUrl()}\n\n` +
+    `Copied ${copiedReportKeys.length} report file(s):\n` +
+    copiedReportKeys.map(k => `• ${reportFilesByKey[k].getName()}`).join('\n');
+
+  if (processed.length) {
+    summary += `\n\nProcessed invoices:\n${processed.map(x => `• ${x}`).join('\n')}`;
+  }
+  if (notFound.length) {
+    summary += `\n\nInvoice folder/sheet not found for:\n${notFound.map(x => `• ${x}`).join('\n')}`;
+  }
+
+  setStatus_('Finalizing summary...', 98, runId);
+  setStatus_(summary, 99, runId);
+}
+
 /***** CUSTOMER FOLDER LOOKUP *****/
 function findCustomerPoFolder_(purchasesRoot, customerNumber) {
   const normalized = customerNumber.replace(/^#/, '').trim();
@@ -427,11 +549,12 @@ function createInvoiceTestCopy_(invoiceFile, targetFolder, customerNumber) {
 }
 
 /***** INVOICE TAB REFRESH *****/
-function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20, runId) {
+function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20, runId, options) {
   const ui = SpreadsheetApp.getUi();
+  const interactive = !options || options.interactive !== false;
 
   setStatus_(`Checking for required "PO" tab in ${invoiceNo}...`, null, runId);
-  const canContinue = ensurePoSheetExistsOrCancel_(invoiceSpreadsheetId, invoiceNo);
+  const canContinue = ensurePoSheetExistsOrCancel_(invoiceSpreadsheetId, invoiceNo, interactive);
   if (!canContinue) return false;
 
   const targetSs = SpreadsheetApp.openById(invoiceSpreadsheetId);
@@ -439,7 +562,7 @@ function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20, runI
 
   const existing = targetNames.filter(name => targetSs.getSheetByName(name));
 
-  if (existing.length) {
+  if (existing.length && interactive) {
     const confirm = ui.alert(
       'Update PO Tabs',
       `Invoice ${invoiceNo} already has: ${existing.join(', ')}.\n\nDelete and import updated tab(s)?`,
@@ -464,9 +587,13 @@ function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20, runI
   return true;
 }
 
-function ensurePoSheetExistsOrCancel_(invoiceSpreadsheetId, invoiceNo) {
+function ensurePoSheetExistsOrCancel_(invoiceSpreadsheetId, invoiceNo, interactive) {
   const ui = SpreadsheetApp.getUi();
   let ss = SpreadsheetApp.openById(invoiceSpreadsheetId);
+
+  if (interactive === false) {
+    return !!ss.getSheetByName('PO');
+  }
 
   while (!ss.getSheetByName('PO')) {
     const decision = ui.alert(
