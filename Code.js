@@ -31,15 +31,27 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('DTSC Report Wizard')
     .addItem('Open Progress Window', 'openWizardSidebar')
+    .addItem('Compile Month Totals', 'openCompileSidebar')
     .addToUi();
 }
 
 function openWizardSidebar() {
-  const html = HtmlService.createHtmlOutputFromFile('sidebar')
-    .setTitle('Report Wizard Progress')
-    .setWidth(560)
-    .setHeight(760);
-  SpreadsheetApp.getUi().showModelessDialog(html, 'Report Wizard Progress');
+  openSidebarWithMode_('wizard');
+}
+
+function openCompileSidebar() {
+  openSidebarWithMode_('compile');
+}
+
+function openSidebarWithMode_(mode) {
+  const tpl = HtmlService.createTemplateFromFile('sidebar');
+  tpl.initialMode = mode || 'wizard';
+  const title = mode === 'compile' ? 'Compile Month Totals' : 'Report Wizard Progress';
+  const html = tpl.evaluate()
+    .setTitle(title)
+    .setWidth(620)
+    .setHeight(800);
+  SpreadsheetApp.getUi().showModelessDialog(html, title);
 }
 
 function startReportWizard() {
@@ -99,6 +111,21 @@ function beginWizardRunWithParams(params) {
   return runId;
 }
 
+function beginCompileRunWithParams(params) {
+  const safe = params || {};
+  const runId = `run_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+  const state = {
+    runId,
+    status: 'running',
+    progress: 0,
+    logs: [`${timestamp_()} Compile run created (${safe.testMode ? 'TEST' : 'LIVE'})`],
+    error: '',
+    mode: safe.testMode ? 'COMPILE-TEST' : 'COMPILE-LIVE',
+  };
+  saveRunState_(runId, state);
+  return runId;
+}
+
 function runWizardWithParams(runId, params) {
   const safe = params || {};
   try {
@@ -110,6 +137,43 @@ function runWizardWithParams(runId, params) {
     failRun_(runId, error);
     throw error;
   }
+}
+
+function runCompileMonthTotalsWithParams(runId, params) {
+  const safe = params || {};
+  try {
+    setStatus_('Starting compile workflow...', 2, runId);
+    compileMonthTotalsWithInputs_(safe, runId);
+    setStatus_('Completed successfully.', 100, runId);
+    finishRun_(runId);
+  } catch (error) {
+    failRun_(runId, error);
+    throw error;
+  }
+}
+
+function listCompileTargetReports(params) {
+  const safe = params || {};
+  const customerNumber = String(safe.customerNumber || '').trim();
+  const reportType = String(safe.reportType || '').trim().toUpperCase();
+  const testMode = !!safe.testMode;
+  const year = Number(safe.year || new Date().getFullYear());
+
+  if (!customerNumber || !reportType || Number.isNaN(year)) return [];
+  if (!['DTSC-ALL', 'DTSC', 'NETCOST'].includes(reportType)) return [];
+
+  const purchasesRoot = DriveApp.getFolderById(PURCHASES_FOLDER_ID);
+  const customerFolder = findCustomerPoFolder_(purchasesRoot, customerNumber);
+  if (!customerFolder) return [];
+
+  const customerTag = buildCustomerTag_(customerNumber);
+  const candidates = collectReportFilesForCompile_(customerFolder, customerTag, testMode, reportType, year);
+  return candidates.map((item) => ({
+    id: item.file.getId(),
+    name: item.file.getName(),
+    month: item.month,
+    year: item.year,
+  }));
 }
 
 function saveRunState_(runId, state) {
@@ -338,24 +402,6 @@ function startReportWizardCore_(opts) {
       setStatus_(`Backfilled previous months for: ${backfillResult.updatedReports.join(', ')}`, 91, runId);
     }
 
-    if (reportFilesByKey['DTSC-ALL'] && processedInvoiceNos.length) {
-      setStatus_('Updating DTSC-ALL monthly totals...', 92, runId);
-      const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
-      writeDtscAllMonthlyTotals_(reportFilesByKey['DTSC-ALL'], invoiceMonth);
-    }
-
-    if (reportFilesByKey['DTSC'] && processedInvoiceNos.length) {
-      setStatus_('Updating DTSC monthly totals...', 93, runId);
-      const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
-      writeDtscMonthlyTotals_(reportFilesByKey['DTSC'], invoiceMonth);
-    }
-
-    if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
-      setStatus_('Updating NETCOST monthly totals...', 94, runId);
-      const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
-      writeNetcostMonthlyTotals_(reportFilesByKey['NETCOST'], invoiceMonth);
-    }
-
     const copiedReportKeys = Object.keys(reportFilesByKey);
     let msg =
       `${testMode ? 'TEST' : 'LIVE'} complete.\n\n` +
@@ -514,24 +560,6 @@ function startReportWizardWithInputs_(params, runId) {
     setStatus_(`Backfill warning: ${backfillResult.warning}`, null, runId);
   } else if (backfillResult.updatedReports.length) {
     setStatus_(`Backfilled previous months for: ${backfillResult.updatedReports.join(', ')}`, 91, runId);
-  }
-
-  if (reportFilesByKey['DTSC-ALL'] && processedInvoiceNos.length) {
-    setStatus_('Updating DTSC-ALL monthly totals...', 92, runId);
-    const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
-    writeDtscAllMonthlyTotals_(reportFilesByKey['DTSC-ALL'], invoiceMonth);
-  }
-
-  if (reportFilesByKey['DTSC'] && processedInvoiceNos.length) {
-    setStatus_('Updating DTSC monthly totals...', 93, runId);
-    const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
-    writeDtscMonthlyTotals_(reportFilesByKey['DTSC'], invoiceMonth);
-  }
-
-  if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
-    setStatus_('Updating NETCOST monthly totals...', 94, runId);
-    const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
-    writeNetcostMonthlyTotals_(reportFilesByKey['NETCOST'], invoiceMonth);
   }
 
   const copiedReportKeys = Object.keys(reportFilesByKey);
@@ -1210,6 +1238,189 @@ function copyPreviousMonthBlockByReportKey_(sourceFile, targetFile, reportKey, c
   const sourceValues = sourceSheet.getRange(25, cfg.startCol, rowsToCopy, cfg.numCols).getValues();
   targetSheet.getRange(25, cfg.startCol, rowsToCopy, cfg.numCols).setValues(sourceValues);
   return true;
+}
+
+function compileMonthTotalsWithInputs_(params, runId) {
+  const safe = params || {};
+  const customerNumber = String(safe.customerNumber || '').trim();
+  const reportType = String(safe.reportType || '').trim().toUpperCase();
+  const targetReportId = String(safe.targetReportId || '').trim();
+  const year = Number(safe.year || new Date().getFullYear());
+  const testMode = !!safe.testMode;
+  const months = normalizeCompileMonths_(safe.months);
+
+  if (!customerNumber) throw new Error('Customer Number is required.');
+  if (!['DTSC-ALL', 'DTSC', 'NETCOST'].includes(reportType)) {
+    throw new Error('Report type must be DTSC-ALL, DTSC, or NETCOST.');
+  }
+  if (!targetReportId) throw new Error('Target report is required.');
+  if (Number.isNaN(year) || year < 2000 || year > 2099) throw new Error('Year is invalid.');
+  if (!months.length) throw new Error('Select at least one month to compile.');
+
+  setStatus_('Connecting to Purchases folder...', 6, runId);
+  const purchasesRoot = DriveApp.getFolderById(PURCHASES_FOLDER_ID);
+  const customerFolder = findCustomerPoFolder_(purchasesRoot, customerNumber);
+  if (!customerFolder) throw new Error(`Customer folder not found for ${customerNumber}.`);
+
+  const customerTag = buildCustomerTag_(customerNumber);
+  const targetFile = DriveApp.getFileById(targetReportId);
+  const updated = [];
+  const missing = [];
+
+  months.forEach((month, idx) => {
+    const progress = 15 + Math.floor(((idx + 1) / months.length) * 75);
+    const monthName = monthNumberToName_(month);
+    setStatus_(`Compiling ${reportType} totals for ${monthName} ${year}...`, progress, runId);
+
+    const sourceFile = findReportFileByExactPeriod_(
+      customerFolder,
+      customerTag,
+      testMode,
+      reportType,
+      year,
+      month,
+      targetReportId
+    );
+
+    if (!sourceFile) {
+      missing.push(`${monthName}-${year}`);
+      return;
+    }
+
+    copyMonthlyTotalsFromSourceToTarget_(sourceFile, targetFile, reportType, month);
+    updated.push(`${monthName}-${year}`);
+  });
+
+  let summary =
+    `Compile complete for ${reportType}.\n` +
+    `Target:\n${targetFile.getName()}\n${targetFile.getUrl()}`;
+
+  if (updated.length) {
+    summary += `\n\nUpdated month rows:\n${updated.map(m => `• ${m}`).join('\n')}`;
+  }
+  if (missing.length) {
+    summary += `\n\nMissing source reports:\n${missing.map(m => `• ${m}`).join('\n')}`;
+  }
+
+  setStatus_('Finalizing compile summary...', 98, runId);
+  setStatus_(summary, 99, runId);
+}
+
+function normalizeCompileMonths_(monthsInput) {
+  const raw = Array.isArray(monthsInput) ? monthsInput : [];
+  const set = new Set();
+
+  raw.forEach((value) => {
+    const month = Number(value);
+    if (!Number.isNaN(month) && month >= 1 && month <= 12) {
+      set.add(month);
+    }
+  });
+
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+function collectReportFilesForCompile_(customerFolder, customerTag, testMode, reportType, year) {
+  const matches = [];
+  const seen = {};
+
+  const folders = [];
+  const top = customerFolder.getFolders();
+  while (top.hasNext()) {
+    const folder = top.next();
+    if (isGeneratedReportsFolderCandidate_(folder.getName(), customerTag, testMode)) {
+      folders.push(folder);
+    }
+  }
+
+  folders.forEach((folder) => {
+    const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
+    while (files.hasNext()) {
+      const file = files.next();
+      if (seen[file.getId()]) continue;
+      seen[file.getId()] = true;
+
+      const parsed = parseReportFilePeriodAndKey_(file.getName());
+      if (!parsed) continue;
+      if (parsed.reportKey !== reportType || parsed.year !== year) continue;
+
+      matches.push({
+        file,
+        month: parsed.month,
+        year: parsed.year,
+        updatedAt: file.getLastUpdated().getTime(),
+      });
+    }
+  });
+
+  matches.sort((a, b) => {
+    if (a.month !== b.month) return a.month - b.month;
+    return b.updatedAt - a.updatedAt;
+  });
+
+  return matches;
+}
+
+function findReportFileByExactPeriod_(
+  customerFolder,
+  customerTag,
+  testMode,
+  reportType,
+  year,
+  month,
+  preferredFileId
+) {
+  const all = collectReportFilesForCompile_(customerFolder, customerTag, testMode, reportType, year)
+    .filter(item => item.month === month);
+  if (!all.length) return null;
+
+  const preferred = all.find(item => item.file.getId() === preferredFileId);
+  if (preferred) return preferred.file;
+
+  all.sort((a, b) => b.updatedAt - a.updatedAt);
+  return all[0].file;
+}
+
+function getMonthlyReportConfig_(reportType) {
+  const map = {
+    'NETCOST': { sheetName: 'NETCOST', startCol: 2, numCols: 17 },
+    'DTSC-ALL': { sheetName: 'DTSC ALL ITEMS', startCol: 2, numCols: 13 },
+    'DTSC': { sheetName: 'DTSC', startCol: 2, numCols: 11 },
+  };
+  return map[reportType] || null;
+}
+
+function copyMonthlyTotalsFromSourceToTarget_(sourceFile, targetFile, reportType, targetMonth) {
+  const cfg = getMonthlyReportConfig_(reportType);
+  if (!cfg) throw new Error(`Unsupported report type: ${reportType}`);
+
+  const sourceSs = SpreadsheetApp.openById(sourceFile.getId());
+  const targetSs = SpreadsheetApp.openById(targetFile.getId());
+  const sourceSheet = sourceSs.getSheetByName(cfg.sheetName);
+  const targetSheet = targetSs.getSheetByName(cfg.sheetName);
+  if (!sourceSheet || !targetSheet) {
+    throw new Error(`Required sheet "${cfg.sheetName}" not found in source/target report.`);
+  }
+
+  const totals = sourceSheet.getRange(20, cfg.startCol, 1, cfg.numCols).getValues();
+  const monthCells = targetSheet.getRange('A25:A36').getDisplayValues();
+
+  let targetRow = null;
+  for (let i = 0; i < monthCells.length; i++) {
+    const labelMonth = monthLabelToNumber_(monthCells[i][0]);
+    if (labelMonth === targetMonth) {
+      targetRow = 25 + i;
+      break;
+    }
+  }
+
+  if (!targetRow) {
+    throw new Error(
+      `Could not find month row for ${monthNumberToName_(targetMonth)} in ${cfg.sheetName}!A25:A36.`
+    );
+  }
+
+  targetSheet.getRange(targetRow, cfg.startCol, 1, cfg.numCols).setValues(totals);
 }
 
 function resolveSingleInvoiceMonth_(invoiceNumbers) {

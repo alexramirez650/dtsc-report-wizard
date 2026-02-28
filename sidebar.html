@@ -4,8 +4,16 @@
     <base target="_top">
     <style>
       body { font-family: Arial, sans-serif; margin: 12px; }
+      h3 { margin: 6px 0 10px 0; }
       .row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
       .col { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+      .hidden { display: none; }
+      .panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
       button { padding: 8px 10px; cursor: pointer; }
       button:disabled { opacity: 0.6; cursor: not-allowed; }
       label { font-size: 12px; color: #374151; font-weight: 600; }
@@ -45,29 +53,78 @@
         border-radius: 6px;
         white-space: pre-wrap;
       }
+      .months-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .month-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+      }
+      .month-item input { width: auto; }
     </style>
   </head>
   <body>
+    <h3>DTSC Report Wizard</h3>
+
     <div class="col">
+      <label for="workflow">Action</label>
+      <select id="workflow" onchange="onWorkflowChange()">
+        <option value="wizard">Run Wizard</option>
+        <option value="compile">Compile Month Totals</option>
+      </select>
+
       <label for="customerNumber">Customer Number</label>
       <input id="customerNumber" placeholder="#199-1" />
-
-      <label for="invoiceNumbers">Invoice Number(s)</label>
-      <textarea id="invoiceNumbers" placeholder="#199-1-01-08-26&#10;#199-1-01-15-26"></textarea>
-      <div class="hint">Use comma or new line for multiple invoices.</div>
-
-      <div class="row">
-        <label for="hasSb20" style="font-weight:normal;display:flex;gap:6px;align-items:center;">
-          <input id="hasSb20" type="checkbox" style="width:auto;" />
-          Customer has SB-20 items
-        </label>
-      </div>
 
       <label for="mode">Run Mode</label>
       <select id="mode">
         <option value="test">TEST</option>
         <option value="live">LIVE</option>
       </select>
+    </div>
+
+    <div id="wizardPanel" class="panel">
+      <div class="col">
+        <label for="invoiceNumbers">Invoice Number(s)</label>
+        <textarea id="invoiceNumbers" placeholder="#199-1-01-08-26&#10;#199-1-01-15-26"></textarea>
+        <div class="hint">Use comma or new line for multiple invoices.</div>
+
+        <div class="row">
+          <label for="hasSb20" style="font-weight:normal;display:flex;gap:6px;align-items:center;">
+            <input id="hasSb20" type="checkbox" style="width:auto;" />
+            Customer has SB-20 items
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div id="compilePanel" class="panel hidden">
+      <div class="col">
+        <label for="compileType">Report Type</label>
+        <select id="compileType" onchange="clearCompileTargets()">
+          <option value="DTSC-ALL">DTSC-ALL</option>
+          <option value="DTSC">DTSC</option>
+          <option value="NETCOST">NETCOST</option>
+        </select>
+
+        <label for="compileYear">Report Year</label>
+        <input id="compileYear" type="number" min="2000" max="2099" />
+
+        <div class="row">
+          <button id="btnLoadTargets" onclick="loadCompileTargets()">Load Report Files</button>
+        </div>
+
+        <label for="targetReportId">Target Report File</label>
+        <select id="targetReportId"></select>
+        <div class="hint">Choose the report file where month totals should be written.</div>
+
+        <label>Months To Compile</label>
+        <div id="monthsGrid" class="months-grid"></div>
+      </div>
     </div>
 
     <div class="row">
@@ -81,15 +138,64 @@
     <div class="log" id="log"></div>
 
     <script>
+      const INITIAL_MODE = '<?= initialMode ?>' || 'wizard';
+      const MONTH_NAMES = [
+        'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
+      ];
+
       let runId = null;
       let pollHandle = null;
       let isRunning = false;
       let lastLogAt = null;
 
+      function initMonthsGrid() {
+        const grid = document.getElementById('monthsGrid');
+        grid.innerHTML = '';
+        MONTH_NAMES.forEach((name, idx) => {
+          const month = idx + 1;
+          const row = document.createElement('label');
+          row.className = 'month-item';
+          row.innerHTML = `<input type="checkbox" value="${month}" class="compile-month" /> ${name}`;
+          grid.appendChild(row);
+        });
+      }
+
+      function onWorkflowChange() {
+        const mode = document.getElementById('workflow').value;
+        const wizardPanel = document.getElementById('wizardPanel');
+        const compilePanel = document.getElementById('compilePanel');
+        const btnStart = document.getElementById('btnStart');
+
+        if (mode === 'compile') {
+          wizardPanel.classList.add('hidden');
+          compilePanel.classList.remove('hidden');
+          btnStart.textContent = 'Start Compile';
+        } else {
+          compilePanel.classList.add('hidden');
+          wizardPanel.classList.remove('hidden');
+          btnStart.textContent = 'Start Run';
+        }
+      }
+
+      function clearCompileTargets() {
+        const select = document.getElementById('targetReportId');
+        select.innerHTML = '';
+      }
+
+      function getSharedInputs() {
+        const customerNumber = document.getElementById('customerNumber').value.trim();
+        const mode = document.getElementById('mode').value;
+        const testMode = mode !== 'live';
+        if (!customerNumber) throw new Error('Customer Number is required.');
+        return { customerNumber, testMode };
+      }
+
       function setUiRunning(running) {
         isRunning = running;
         document.getElementById('btnStart').disabled = running;
         document.getElementById('btnStop').disabled = !running;
+        document.getElementById('btnLoadTargets').disabled = running;
       }
 
       function setLog(lines) {
@@ -115,24 +221,102 @@
       }
 
       function buildParams() {
-        const customerNumber = document.getElementById('customerNumber').value.trim();
+        const shared = getSharedInputs();
         const invoiceNumbers = document.getElementById('invoiceNumbers').value.trim();
         const hasSb20 = document.getElementById('hasSb20').checked;
-        const mode = document.getElementById('mode').value;
-        const testMode = mode !== 'live';
-
-        if (!customerNumber) throw new Error('Customer Number is required.');
         if (!invoiceNumbers) throw new Error('Invoice Number(s) are required.');
 
-        return { customerNumber, invoiceNumbers, hasSb20, testMode };
+        return {
+          customerNumber: shared.customerNumber,
+          testMode: shared.testMode,
+          invoiceNumbers,
+          hasSb20,
+        };
+      }
+
+      function buildCompileParams() {
+        const shared = getSharedInputs();
+        const reportType = document.getElementById('compileType').value;
+        const year = Number(document.getElementById('compileYear').value);
+        const targetReportId = document.getElementById('targetReportId').value;
+        const months = Array.from(document.querySelectorAll('.compile-month:checked'))
+          .map(cb => Number(cb.value));
+
+        if (!reportType) throw new Error('Report Type is required.');
+        if (!year || Number.isNaN(year) || year < 2000 || year > 2099) {
+          throw new Error('Report Year is invalid.');
+        }
+        if (!targetReportId) throw new Error('Target Report File is required.');
+        if (!months.length) throw new Error('Select at least one month to compile.');
+
+        return {
+          customerNumber: shared.customerNumber,
+          testMode: shared.testMode,
+          reportType,
+          year,
+          targetReportId,
+          months,
+        };
+      }
+
+      function loadCompileTargets() {
+        if (isRunning) return;
+
+        let shared;
+        try {
+          shared = getSharedInputs();
+        } catch (err) {
+          document.getElementById('meta').textContent = err.message;
+          return;
+        }
+
+        const reportType = document.getElementById('compileType').value;
+        const year = Number(document.getElementById('compileYear').value);
+        if (!reportType || !year || Number.isNaN(year)) {
+          document.getElementById('meta').textContent = 'Select report type and year first.';
+          return;
+        }
+
+        document.getElementById('meta').textContent = 'Loading report files...';
+        const select = document.getElementById('targetReportId');
+        select.innerHTML = '';
+
+        google.script.run
+          .withSuccessHandler((items) => {
+            const rows = items || [];
+            if (!rows.length) {
+              document.getElementById('meta').textContent = 'No matching report files found.';
+              return;
+            }
+
+            rows.forEach((item) => {
+              const opt = document.createElement('option');
+              opt.value = item.id;
+              opt.textContent = item.name;
+              select.appendChild(opt);
+            });
+            document.getElementById('meta').textContent = `Loaded ${rows.length} report file(s).`;
+          })
+          .withFailureHandler((err) => {
+            document.getElementById('meta').textContent = 'Failed to load report files';
+            console.error(err);
+          })
+          .listCompileTargetReports({
+            customerNumber: shared.customerNumber,
+            testMode: shared.testMode,
+            reportType,
+            year,
+          });
       }
 
       function startRun() {
         if (isRunning) return;
 
+        const workflow = document.getElementById('workflow').value;
+
         let params;
         try {
-          params = buildParams();
+          params = workflow === 'compile' ? buildCompileParams() : buildParams();
         } catch (err) {
           document.getElementById('meta').textContent = err.message;
           return;
@@ -145,6 +329,9 @@
         document.getElementById('heartbeat').textContent = 'Last update: starting...';
         lastLogAt = Date.now();
 
+        const beginMethod = workflow === 'compile' ? 'beginCompileRunWithParams' : 'beginWizardRunWithParams';
+        const runMethod = workflow === 'compile' ? 'runCompileMonthTotalsWithParams' : 'runWizardWithParams';
+
         google.script.run
           .withSuccessHandler((newRunId) => {
             runId = newRunId;
@@ -154,7 +341,7 @@
                 console.error(err);
                 pollOnce();
               })
-              .runWizardWithParams(runId, params);
+              [runMethod](runId, params);
 
             pollHandle = setInterval(pollOnce, 1200);
             pollOnce();
@@ -164,7 +351,7 @@
             document.getElementById('meta').textContent = 'Failed to start run';
             document.getElementById('log').textContent = String(err);
           })
-          .beginWizardRunWithParams(params);
+          [beginMethod](params);
       }
 
       function updateHeartbeat() {
@@ -200,6 +387,11 @@
         setUiRunning(false);
         updateHeartbeat();
       }
+
+      document.getElementById('compileYear').value = String(new Date().getFullYear());
+      initMonthsGrid();
+      document.getElementById('workflow').value = INITIAL_MODE === 'compile' ? 'compile' : 'wizard';
+      onWorkflowChange();
 
       setInterval(updateHeartbeat, 1000);
     </script>
