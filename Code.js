@@ -41,8 +41,8 @@ function onOpen() {
 function openWizardSidebar() {
   const html = HtmlService.createHtmlOutputFromFile('sidebar')
     .setTitle('Report Wizard Progress')
-    .setWidth(420)
-    .setHeight(560);
+    .setWidth(560)
+    .setHeight(760);
   SpreadsheetApp.getUi().showModelessDialog(html, 'Report Wizard Progress');
 }
 
@@ -706,15 +706,20 @@ function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, r
   const importedInto = [];
   const invoiceSs = SpreadsheetApp.openById(invoiceSpreadsheetId);
 
+  const poSheet = invoiceSs.getSheetByName('PO');
+  if (poSheet && reportFilesByKey['DTSC-ALL']) {
+    const dtscAllSs = SpreadsheetApp.openById(reportFilesByKey['DTSC-ALL'].getId());
+    const tabName = buildTargetTabName_('PO', invoiceNo);
+    copySheetIntoReport_(poSheet, dtscAllSs, tabName);
+    importedInto.push(`DTSC-ALL:${tabName}`);
+  }
+
   const ewasteSheet = invoiceSs.getSheetByName('EWASTE-PO');
-  if (ewasteSheet) {
-    ['DTSC-ALL', 'DTSC'].forEach(reportKey => {
-      if (!reportFilesByKey[reportKey]) return;
-      const reportSs = SpreadsheetApp.openById(reportFilesByKey[reportKey].getId());
-      const tabName = buildTargetTabName_('EWASTE-PO', invoiceNo);
-      copySheetIntoReport_(ewasteSheet, reportSs, tabName);
-      importedInto.push(`${reportKey}:${tabName}`);
-    });
+  if (ewasteSheet && reportFilesByKey['DTSC']) {
+    const dtscSs = SpreadsheetApp.openById(reportFilesByKey['DTSC'].getId());
+    const tabName = buildTargetTabName_('EWASTE-PO', invoiceNo);
+    copySheetIntoReport_(ewasteSheet, dtscSs, tabName);
+    importedInto.push(`DTSC:${tabName}`);
   }
 
   if (hasSb20) {
