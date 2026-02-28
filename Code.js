@@ -312,6 +312,17 @@ function startReportWizardCore_(opts) {
       setStatus_(`Renamed reports to ${renameResult.periodLabel}.`, null, runId);
     }
 
+    const folderRename = renameGeneratedReportsFolderByInvoicePeriod_(
+      generatedReportsFolder,
+      testMode,
+      processedInvoiceNos
+    );
+    if (folderRename.warning) {
+      setStatus_(`Folder naming warning: ${folderRename.warning}`, null, runId);
+    } else if (folderRename.renamed) {
+      setStatus_(`Renamed folder to ${folderRename.folderName}.`, null, runId);
+    }
+
     if (reportFilesByKey['DTSC-ALL'] && processedInvoiceNos.length) {
       setStatus_('Updating DTSC-ALL monthly totals...', 92, runId);
       const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
@@ -462,6 +473,17 @@ function startReportWizardWithInputs_(params, runId) {
     setStatus_(`Report naming warning: ${renameResult.warning}`, null, runId);
   } else if (renameResult.renamed) {
     setStatus_(`Renamed reports to ${renameResult.periodLabel}.`, null, runId);
+  }
+
+  const folderRename = renameGeneratedReportsFolderByInvoicePeriod_(
+    generatedReportsFolder,
+    testMode,
+    processedInvoiceNos
+  );
+  if (folderRename.warning) {
+    setStatus_(`Folder naming warning: ${folderRename.warning}`, null, runId);
+  } else if (folderRename.renamed) {
+    setStatus_(`Renamed folder to ${folderRename.folderName}.`, null, runId);
   }
 
   if (reportFilesByKey['DTSC-ALL'] && processedInvoiceNos.length) {
@@ -960,6 +982,31 @@ function renameReportsByInvoicePeriod_(reportFilesByKey, customerNumber, process
     renamed: true,
     warning: '',
     periodLabel,
+  };
+}
+
+function renameGeneratedReportsFolderByInvoicePeriod_(folder, testMode, processedInvoiceNos) {
+  const resolved = resolveSingleInvoicePeriodForNaming_(processedInvoiceNos);
+  if (!resolved.period) {
+    return {
+      renamed: false,
+      warning: resolved.warning,
+      folderName: '',
+    };
+  }
+
+  const periodLabel = `${monthNumberToName_(resolved.period.month)}-${resolved.period.year}`;
+  const baseName = testMode ? TEST_FOLDER_NAME : LIVE_FOLDER_NAME;
+  const folderName = `${baseName} - ${periodLabel}`;
+
+  if (folder.getName() !== folderName) {
+    folder.setName(folderName);
+  }
+
+  return {
+    renamed: true,
+    warning: '',
+    folderName,
   };
 }
 
