@@ -5,6 +5,7 @@ const PURCHASES_FOLDER_ID = '1lNJdDrFNR5bvdcCAvqxqM560H2GOvapR';
 const TEST_MODE_DEFAULT = true;
 const TEST_FOLDER_NAME = 'Generated Reports - TEST';
 const LIVE_FOLDER_NAME = 'Generated Reports';
+const ENABLE_PURCHASES_WIDE_FALLBACK = false;
 
 // Report templates copied into Generated Reports folder
 const REPORT_TEMPLATES = {
@@ -371,7 +372,13 @@ function startReportWizardWithInputs_(params, runId) {
   const processed = [];
 
   invoiceInputs.forEach((invoiceNo) => {
-    const match = findInvoiceSheetInPurchases_(purchasesRoot, invoiceNo, customerNumber);
+    const match = findInvoiceSheetForCustomer_(
+      customerFolder,
+      purchasesRoot,
+      invoiceNo,
+      customerNumber,
+      runId
+    );
     if (match) found.push({ invoiceNo, folder: match.folder, file: match.file });
     else notFound.push(invoiceNo);
   });
@@ -384,6 +391,14 @@ function startReportWizardWithInputs_(params, runId) {
       const invoiceFileToProcess = testMode
         ? createInvoiceTestCopy_(item.file, generatedReportsFolder, customerNumber)
         : item.file;
+
+      setStatus_(
+        testMode
+          ? `TEST mode: updating copy "${invoiceFileToProcess.getName()}" (original is unchanged).`
+          : `LIVE mode: updating original invoice file "${invoiceFileToProcess.getName()}".`,
+        null,
+        runId
+      );
 
       const refreshed = upsertPoSheetsInInvoice_(
         invoiceFileToProcess.getId(),
@@ -460,6 +475,31 @@ function findInvoiceSheetInPurchases_(purchasesRoot, invoiceNumber, customerNumb
   if (!sheetFile) return null;
 
   return { folder: preferred, file: sheetFile };
+}
+
+function findInvoiceSheetForCustomer_(customerFolder, purchasesRoot, invoiceNumber, customerNumber, runId) {
+  setStatus_(`Looking for invoice ${invoiceNumber} in customer folder first...`, null, runId);
+  const inCustomer = findInvoiceSheetInCustomerFolderRecursive_(customerFolder, invoiceNumber);
+  if (inCustomer) return inCustomer;
+
+  if (!ENABLE_PURCHASES_WIDE_FALLBACK) {
+    return null;
+  }
+
+  setStatus_(`Not found in customer folder; searching all Purchases (slower)...`, null, runId);
+  return findInvoiceSheetInPurchases_(purchasesRoot, invoiceNumber, customerNumber);
+}
+
+function findInvoiceSheetInCustomerFolderRecursive_(customerFolder, invoiceNumber) {
+  const matches = [];
+  collectFoldersByExactNameRecursive_(customerFolder, invoiceNumber, matches);
+  if (!matches.length) return null;
+
+  const invoiceFolder = matches[0];
+  const sheetFile = findInvoiceSheetInFolder_(invoiceFolder, invoiceNumber);
+  if (!sheetFile) return null;
+
+  return { folder: invoiceFolder, file: sheetFile };
 }
 
 function collectFoldersByExactNameRecursive_(folder, exactName, out) {
