@@ -2,8 +2,127 @@
 <html>
   <head>
     <base target="_top">
+    <style>
+      body { font-family: Arial, sans-serif; margin: 12px; }
+      .row { display: flex; gap: 8px; margin-bottom: 10px; }
+      button { padding: 8px 10px; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      .meta { font-size: 12px; color: #374151; margin: 8px 0; }
+      .bar-wrap {
+        width: 100%;
+        height: 12px;
+        background: #e5e7eb;
+        border-radius: 6px;
+        overflow: hidden;
+        margin: 8px 0 12px 0;
+      }
+      .bar {
+        height: 100%;
+        width: 0%;
+        background: #2563eb;
+        transition: width .2s linear;
+      }
+      .log {
+        height: 300px;
+        overflow: auto;
+        background: #111827;
+        color: #e5e7eb;
+        font-family: Consolas, monospace;
+        font-size: 12px;
+        padding: 8px;
+        border-radius: 6px;
+        white-space: pre-wrap;
+      }
+    </style>
   </head>
   <body>
-    
+    <div class="row">
+      <button id="btnTest" onclick="startRun(true)">Run TEST</button>
+      <button id="btnLive" onclick="startRun(false)">Run LIVE</button>
+      <button id="btnStop" onclick="stopPolling()" disabled>Stop Poll</button>
+    </div>
+
+    <div class="meta" id="meta">Idle</div>
+    <div class="bar-wrap"><div class="bar" id="bar"></div></div>
+    <div class="log" id="log"></div>
+
+    <script>
+      let runId = null;
+      let pollHandle = null;
+      let isRunning = false;
+
+      function setUiRunning(running) {
+        isRunning = running;
+        document.getElementById('btnTest').disabled = running;
+        document.getElementById('btnLive').disabled = running;
+        document.getElementById('btnStop').disabled = !running;
+      }
+
+      function setLog(lines) {
+        const el = document.getElementById('log');
+        el.textContent = (lines || []).join('\n');
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function updateView(state) {
+        const mode = state.mode || '-';
+        const status = state.status || '-';
+        const progress = Number(state.progress || 0);
+        document.getElementById('meta').textContent =
+          `Mode: ${mode} | Status: ${status} | Progress: ${progress}%`;
+        document.getElementById('bar').style.width = progress + '%';
+        setLog(state.logs || []);
+      }
+
+      function startRun(testMode) {
+        if (isRunning) return;
+        setUiRunning(true);
+        document.getElementById('meta').textContent = 'Starting...';
+        document.getElementById('bar').style.width = '0%';
+        document.getElementById('log').textContent = '';
+
+        google.script.run
+          .withSuccessHandler((newRunId) => {
+            runId = newRunId;
+
+            google.script.run
+              .withFailureHandler((err) => {
+                console.error(err);
+                pollOnce();
+              })
+              .runWizardWithProgress(runId, testMode);
+
+            pollHandle = setInterval(pollOnce, 1200);
+            pollOnce();
+          })
+          .withFailureHandler((err) => {
+            setUiRunning(false);
+            document.getElementById('meta').textContent = 'Failed to start run';
+            document.getElementById('log').textContent = String(err);
+          })
+          .beginWizardRun(testMode);
+      }
+
+      function pollOnce() {
+        if (!runId) return;
+        google.script.run
+          .withSuccessHandler((state) => {
+            updateView(state);
+            if (state.status === 'done' || state.status === 'error') {
+              stopPolling();
+            }
+          })
+          .withFailureHandler((err) => {
+            console.error(err);
+          })
+          .getWizardRunStatus(runId);
+      }
+
+      function stopPolling() {
+        if (pollHandle) clearInterval(pollHandle);
+        pollHandle = null;
+        setUiRunning(false);
+      }
+    </script>
   </body>
 </html>
