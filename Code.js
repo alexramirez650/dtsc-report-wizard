@@ -755,9 +755,19 @@ function updateImportedDataSheet_(reportSpreadsheet, importedTabNames) {
     importedDataSheet = reportSpreadsheet.insertSheet('IMPORTED-DATA');
   }
 
-  importedDataSheet.getRange('A2:A31').clearContent();
+  const existing = importedDataSheet
+    .getRange('A2:A31')
+    .getValues()
+    .map(row => String(row[0] || '').trim())
+    .filter(Boolean);
 
-  const names = (importedTabNames || []).slice(0, 30);
+  const incoming = (importedTabNames || [])
+    .map(name => String(name || '').trim())
+    .filter(Boolean);
+
+  const names = existing.concat(incoming).slice(0, 30);
+
+  importedDataSheet.getRange('A2:A31').clearContent();
   if (!names.length) return;
 
   const values = names.map(name => [name]);
