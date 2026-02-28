@@ -324,6 +324,20 @@ function startReportWizardCore_(opts) {
       setStatus_(`Renamed folder to ${folderRename.folderName}.`, null, runId);
     }
 
+    const backfillResult = backfillPreviousMonthsTotals_(
+      customerFolder,
+      generatedReportsFolder,
+      reportFilesByKey,
+      customerNumber,
+      testMode,
+      processedInvoiceNos
+    );
+    if (backfillResult.warning) {
+      setStatus_(`Backfill warning: ${backfillResult.warning}`, null, runId);
+    } else if (backfillResult.updatedReports.length) {
+      setStatus_(`Backfilled previous months for: ${backfillResult.updatedReports.join(', ')}`, 91, runId);
+    }
+
     if (reportFilesByKey['DTSC-ALL'] && processedInvoiceNos.length) {
       setStatus_('Updating DTSC-ALL monthly totals...', 92, runId);
       const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
@@ -486,6 +500,20 @@ function startReportWizardWithInputs_(params, runId) {
     setStatus_(`Folder naming warning: ${folderRename.warning}`, null, runId);
   } else if (folderRename.renamed) {
     setStatus_(`Renamed folder to ${folderRename.folderName}.`, null, runId);
+  }
+
+  const backfillResult = backfillPreviousMonthsTotals_(
+    customerFolder,
+    generatedReportsFolder,
+    reportFilesByKey,
+    customerNumber,
+    testMode,
+    processedInvoiceNos
+  );
+  if (backfillResult.warning) {
+    setStatus_(`Backfill warning: ${backfillResult.warning}`, null, runId);
+  } else if (backfillResult.updatedReports.length) {
+    setStatus_(`Backfilled previous months for: ${backfillResult.updatedReports.join(', ')}`, 91, runId);
   }
 
   if (reportFilesByKey['DTSC-ALL'] && processedInvoiceNos.length) {
@@ -1013,6 +1041,175 @@ function renameGeneratedReportsFolderByInvoicePeriod_(folder, testMode, customer
     warning: '',
     folderName,
   };
+}
+
+function backfillPreviousMonthsTotals_(
+  customerFolder,
+  currentGeneratedFolder,
+  reportFilesByKey,
+  customerNumber,
+  testMode,
+  processedInvoiceNos
+) {
+  const resolved = resolveSingleInvoicePeriodForNaming_(processedInvoiceNos);
+  if (!resolved.period) {
+    return {
+      warning: resolved.warning,
+      updatedReports: [],
+    };
+  }
+
+  const currentMonth = resolved.period.month;
+  const currentYear = resolved.period.year;
+  if (currentMonth <= 1) {
+    return {
+      warning: '',
+      updatedReports: [],
+    };
+  }
+
+  const customerTag = buildCustomerTag_(customerNumber);
+  const updatedReports = [];
+
+  Object.keys(reportFilesByKey || {}).forEach((reportKey) => {
+    const currentFile = reportFilesByKey[reportKey];
+    if (!currentFile) return;
+
+    const previousFile = findMostRecentPreviousReportFile_(
+      customerFolder,
+      currentGeneratedFolder,
+      reportKey,
+      customerTag,
+      testMode,
+      currentYear,
+      currentMonth,
+      currentFile.getId()
+    );
+    if (!previousFile) return;
+
+    if (copyPreviousMonthBlockByReportKey_(previousFile, currentFile, reportKey, currentMonth)) {
+      updatedReports.push(reportKey);
+    }
+  });
+
+  return {
+    warning: '',
+    updatedReports,
+  };
+}
+
+function findMostRecentPreviousReportFile_(
+  customerFolder,
+  currentGeneratedFolder,
+  reportKey,
+  customerTag,
+  testMode,
+  currentYear,
+  currentMonth,
+  excludeFileId
+) {
+  const targetPeriod = currentYear * 100 + currentMonth;
+  const candidateFolders = [];
+
+  if (currentGeneratedFolder) {
+    candidateFolders.push(currentGeneratedFolder);
+  }
+
+  const allFolders = customerFolder.getFolders();
+  while (allFolders.hasNext()) {
+    const folder = allFolders.next();
+    if (currentGeneratedFolder && folder.getId() === currentGeneratedFolder.getId()) continue;
+    if (isGeneratedReportsFolderCandidate_(folder.getName(), customerTag, testMode)) {
+      candidateFolders.push(folder);
+    }
+  }
+
+  let best = null;
+
+  candidateFolders.forEach((folder) => {
+    const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
+    while (files.hasNext()) {
+      const file = files.next();
+      if (file.getId() === excludeFileId) continue;
+
+      const parsed = parseReportFilePeriodAndKey_(file.getName());
+      if (!parsed) continue;
+      if (parsed.reportKey !== reportKey) continue;
+      if (parsed.year !== currentYear) continue;
+
+      const periodValue = parsed.year * 100 + parsed.month;
+      if (periodValue >= targetPeriod) continue;
+
+      if (!best || periodValue > best.periodValue ||
+          (periodValue === best.periodValue && file.getLastUpdated().getTime() > best.lastUpdated)) {
+        best = {
+          file,
+          periodValue,
+          lastUpdated: file.getLastUpdated().getTime(),
+        };
+      }
+    }
+  });
+
+  return best ? best.file : null;
+}
+
+function isGeneratedReportsFolderCandidate_(folderName, customerTag, testMode) {
+  const name = String(folderName || '').trim();
+  const modeBase = testMode ? TEST_FOLDER_NAME : LIVE_FOLDER_NAME;
+  const taggedBase = customerTag ? `${customerTag} - ${modeBase}` : modeBase;
+
+  if (name === modeBase || name.startsWith(`${modeBase} - `)) return true;
+  if (name === taggedBase || name.startsWith(`${taggedBase} - `)) return true;
+
+  return false;
+}
+
+function parseReportFilePeriodAndKey_(fileName) {
+  const text = String(fileName || '').trim();
+  const monthRegex =
+    '(January|February|March|April|May|June|July|August|September|October|November|December)';
+  const keyRegex = '(DTSC-ALL|DTSC|NETCOST)';
+  const re = new RegExp(`${keyRegex}-${monthRegex}-(\\d{4})$`, 'i');
+  const match = text.match(re);
+  if (!match) return null;
+
+  const reportKey = match[1].toUpperCase();
+  const monthName = match[2];
+  const year = Number(match[3]);
+  const month = monthLabelToNumber_(monthName);
+
+  if (!month || Number.isNaN(year)) return null;
+
+  return {
+    reportKey,
+    month,
+    year,
+  };
+}
+
+function copyPreviousMonthBlockByReportKey_(sourceFile, targetFile, reportKey, currentMonth) {
+  const map = {
+    'NETCOST': { sheetName: 'NETCOST', startCol: 2, numCols: 17 },
+    'DTSC-ALL': { sheetName: 'DTSC ALL ITEMS', startCol: 2, numCols: 13 },
+    'DTSC': { sheetName: 'DTSC', startCol: 2, numCols: 11 },
+  };
+
+  const cfg = map[reportKey];
+  if (!cfg) return false;
+
+  const rowsToCopy = currentMonth - 1;
+  if (rowsToCopy <= 0) return false;
+
+  const sourceSs = SpreadsheetApp.openById(sourceFile.getId());
+  const targetSs = SpreadsheetApp.openById(targetFile.getId());
+  const sourceSheet = sourceSs.getSheetByName(cfg.sheetName);
+  const targetSheet = targetSs.getSheetByName(cfg.sheetName);
+  if (!sourceSheet || !targetSheet) return false;
+
+  const sourceValues = sourceSheet.getRange(25, cfg.startCol, rowsToCopy, cfg.numCols).getValues();
+  targetSheet.getRange(25, cfg.startCol, rowsToCopy, cfg.numCols).setValues(sourceValues);
+  return true;
 }
 
 function resolveSingleInvoiceMonth_(invoiceNumbers) {
