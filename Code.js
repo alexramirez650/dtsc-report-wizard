@@ -30,8 +30,7 @@ const PO_SHEET_SOURCES = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('DTSC Report Wizard')
-    .addItem('Open Progress Window', 'openWizardSidebar')
-    .addItem('Compile Month Totals', 'openCompileSidebar')
+    .addItem('Start Report Wizard', 'openWizardSidebar')
     .addToUi();
 }
 
