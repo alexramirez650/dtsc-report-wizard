@@ -301,6 +301,17 @@ function startReportWizardCore_(opts) {
       });
     }
 
+    const renameResult = renameReportsByInvoicePeriod_(
+      reportFilesByKey,
+      customerNumber,
+      processedInvoiceNos
+    );
+    if (renameResult.warning) {
+      setStatus_(`Report naming warning: ${renameResult.warning}`, null, runId);
+    } else if (renameResult.renamed) {
+      setStatus_(`Renamed reports to ${renameResult.periodLabel}.`, null, runId);
+    }
+
     if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
       setStatus_('Updating NETCOST monthly totals...', 94, runId);
       const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
@@ -428,6 +439,17 @@ function startReportWizardWithInputs_(params, runId) {
       processedInvoiceNos.push(item.invoiceNo);
       processed.push(`${item.invoiceNo} -> ${imported.join(', ') || 'No import tabs found'}`);
     });
+  }
+
+  const renameResult = renameReportsByInvoicePeriod_(
+    reportFilesByKey,
+    customerNumber,
+    processedInvoiceNos
+  );
+  if (renameResult.warning) {
+    setStatus_(`Report naming warning: ${renameResult.warning}`, null, runId);
+  } else if (renameResult.renamed) {
+    setStatus_(`Renamed reports to ${renameResult.periodLabel}.`, null, runId);
   }
 
   if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
@@ -568,10 +590,7 @@ function normalizeName_(s) {
 function copyAllTemplates_(templates, targetFolder, customerNumber) {
   const result = {};
   const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM-dd-yyyy');
-  const rawCustomer = String(customerNumber || '').trim();
-  const customerTag = rawCustomer
-    ? (rawCustomer.startsWith('#') ? rawCustomer : `#${rawCustomer}`)
-    : '';
+  const customerTag = buildCustomerTag_(customerNumber);
 
   Object.keys(templates).forEach((reportKey) => {
     const url = templates[reportKey];
@@ -587,6 +606,12 @@ function copyAllTemplates_(templates, targetFolder, customerNumber) {
   });
 
   return result;
+}
+
+function buildCustomerTag_(customerNumber) {
+  const rawCustomer = String(customerNumber || '').trim();
+  if (!rawCustomer) return '';
+  return rawCustomer.startsWith('#') ? rawCustomer : `#${rawCustomer}`;
 }
 
 function extractGoogleFileId_(url) {
@@ -812,11 +837,114 @@ function sanitizeTabSuffix_(text) {
     .trim();
 }
 
+function parseInvoiceMonthYear_(invoiceNo) {
+  const raw = String(invoiceNo || '').trim();
+  if (!raw) return null;
+
+  const parts = raw.split('-').map(p => p.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+
+  const monthToken = parts[parts.length - 3];
+  const yearToken = parts[parts.length - 1];
+
+  if (!/^\d{1,2}$/.test(monthToken)) return null;
+  if (!/^\d{2,4}$/.test(yearToken)) return null;
+
+  const month = Number(monthToken);
+  if (month < 1 || month > 12) return null;
+
+  const yearNum = Number(yearToken);
+  if (Number.isNaN(yearNum)) return null;
+  const year = yearToken.length === 2 ? 2000 + yearNum : yearNum;
+
+  if (year < 2000 || year > 2099) return null;
+
+  return { month, year };
+}
+
+function resolveSingleInvoicePeriodForNaming_(invoiceNumbers) {
+  const periods = new Set();
+  const parseErrors = [];
+
+  (invoiceNumbers || []).forEach((invoiceNo) => {
+    const parsed = parseInvoiceMonthYear_(invoiceNo);
+    if (!parsed) {
+      parseErrors.push(invoiceNo);
+      return;
+    }
+    periods.add(`${parsed.year}-${String(parsed.month).padStart(2, '0')}`);
+  });
+
+  if (!invoiceNumbers || !invoiceNumbers.length) {
+    return {
+      warning: 'No successfully processed invoices, so report names were left unchanged.',
+      period: null,
+    };
+  }
+
+  if (parseErrors.length) {
+    return {
+      warning:
+        `Could not parse invoice month/year for ${parseErrors.length} invoice(s), ` +
+        'so report names were left unchanged.',
+      period: null,
+    };
+  }
+
+  if (periods.size !== 1) {
+    return {
+      warning: 'Processed invoices include multiple months, so report names were left unchanged.',
+      period: null,
+    };
+  }
+
+  const periodKey = Array.from(periods)[0];
+  const [yearText, monthText] = periodKey.split('-');
+  return {
+    warning: '',
+    period: {
+      year: Number(yearText),
+      month: Number(monthText),
+    },
+  };
+}
+
+function renameReportsByInvoicePeriod_(reportFilesByKey, customerNumber, processedInvoiceNos) {
+  const resolved = resolveSingleInvoicePeriodForNaming_(processedInvoiceNos);
+  if (!resolved.period) {
+    return {
+      renamed: false,
+      warning: resolved.warning,
+      periodLabel: '',
+    };
+  }
+
+  const periodLabel = `${monthNumberToName_(resolved.period.month)}-${resolved.period.year}`;
+  const customerTag = buildCustomerTag_(customerNumber);
+
+  Object.keys(reportFilesByKey || {}).forEach((reportKey) => {
+    const reportFile = reportFilesByKey[reportKey];
+    if (!reportFile) return;
+
+    const newName = customerTag
+      ? `${customerTag}-${reportKey}-${periodLabel}`
+      : `${reportKey}-${periodLabel}`;
+    reportFile.setName(newName);
+  });
+
+  return {
+    renamed: true,
+    warning: '',
+    periodLabel,
+  };
+}
+
 function resolveSingleInvoiceMonth_(invoiceNumbers) {
   const months = new Set();
 
   (invoiceNumbers || []).forEach((invoiceNo) => {
-    const month = parseInvoiceMonth_(invoiceNo);
+    const parsed = parseInvoiceMonthYear_(invoiceNo);
+    const month = parsed ? parsed.month : null;
     if (!month) {
       throw new Error(
         `Could not parse month from invoice "${invoiceNo}". Expected format like #199-1-01-08-26.`
@@ -840,22 +968,6 @@ function resolveSingleInvoiceMonth_(invoiceNumbers) {
   }
 
   return Array.from(months)[0];
-}
-
-function parseInvoiceMonth_(invoiceNo) {
-  const raw = String(invoiceNo || '').trim();
-  if (!raw) return null;
-
-  const parts = raw.split('-').map(p => p.trim()).filter(Boolean);
-  if (parts.length < 3) return null;
-
-  const monthToken = parts[parts.length - 3];
-  if (!/^\d{1,2}$/.test(monthToken)) return null;
-
-  const month = Number(monthToken);
-  if (month < 1 || month > 12) return null;
-
-  return month;
 }
 
 function monthNumberToName_(monthNumber) {
