@@ -29,50 +29,163 @@ const PO_SHEET_SOURCES = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Reports')
+    .addItem('Open Wizard Sidebar', 'openWizardSidebar')
+    .addSeparator()
     .addItem('Start Report Wizard', 'startReportWizard')
     .addItem('Start Report Wizard (TEST)', 'startReportWizard_TEST')
     .addItem('Start Report Wizard (LIVE)', 'startReportWizard_LIVE')
     .addToUi();
 }
 
+function openWizardSidebar() {
+  const html = HtmlService.createHtmlOutputFromFile('sidebar')
+    .setTitle('Report Wizard')
+    .setWidth(360);
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+
 function startReportWizard() {
-  startReportWizardCore_({ testMode: TEST_MODE_DEFAULT });
+  startReportWizardCore_({ testMode: TEST_MODE_DEFAULT, runId: null });
 }
 
 function startReportWizard_TEST() {
-  startReportWizardCore_({ testMode: true });
+  startReportWizardCore_({ testMode: true, runId: null });
 }
 
 function startReportWizard_LIVE() {
-  startReportWizardCore_({ testMode: false });
+  startReportWizardCore_({ testMode: false, runId: null });
+}
+
+/***** SIDEBAR RUN CONTROL *****/
+function beginWizardRun(testMode) {
+  const runId = `run_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+  const state = {
+    runId,
+    status: 'running',
+    progress: 0,
+    logs: [`${timestamp_()} Run created (${testMode ? 'TEST' : 'LIVE'})`],
+    error: '',
+    mode: testMode ? 'TEST' : 'LIVE',
+  };
+  saveRunState_(runId, state);
+  return runId;
+}
+
+function runWizardWithProgress(runId, testMode) {
+  try {
+    setStatus_('Starting wizard...', 2, runId);
+    startReportWizardCore_({ testMode: !!testMode, runId });
+    setStatus_('Completed successfully.', 100, runId);
+    finishRun_(runId);
+  } catch (error) {
+    failRun_(runId, error);
+    throw error;
+  }
+}
+
+function getWizardRunStatus(runId) {
+  return loadRunState_(runId) || {
+    runId,
+    status: 'not_found',
+    progress: 0,
+    logs: [`${timestamp_()} No run state found.`],
+    error: 'Run not found',
+    mode: '-',
+  };
+}
+
+function saveRunState_(runId, state) {
+  PropertiesService.getUserProperties().setProperty(`RW_${runId}`, JSON.stringify(state));
+}
+
+function loadRunState_(runId) {
+  const raw = PropertiesService.getUserProperties().getProperty(`RW_${runId}`);
+  return raw ? JSON.parse(raw) : null;
+}
+
+function finishRun_(runId) {
+  const state = loadRunState_(runId);
+  if (!state) return;
+  state.status = 'done';
+  state.progress = 100;
+  state.logs.push(`${timestamp_()} Finished.`);
+  saveRunState_(runId, state);
+}
+
+function failRun_(runId, error) {
+  const state = loadRunState_(runId) || {
+    runId,
+    status: 'error',
+    progress: 0,
+    logs: [],
+    error: '',
+    mode: '-',
+  };
+  state.status = 'error';
+  state.error = error && error.message ? error.message : String(error);
+  state.logs.push(`${timestamp_()} ERROR: ${state.error}`);
+  saveRunState_(runId, state);
+}
+
+function setStatus_(message, progress, runId) {
+  Logger.log(message);
+
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast(message, 'Report Wizard', 3);
+  } catch (_) {}
+
+  if (!runId) return;
+
+  const state = loadRunState_(runId);
+  if (!state) return;
+
+  state.logs.push(`${timestamp_()} ${message}`);
+  if (typeof progress === 'number') {
+    state.progress = Math.max(0, Math.min(100, progress));
+  }
+  state.logs = state.logs.slice(-400);
+  saveRunState_(runId, state);
+}
+
+function timestamp_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'HH:mm:ss');
 }
 
 /***** MAIN FLOW *****/
 function startReportWizardCore_(opts) {
   const ui = SpreadsheetApp.getUi();
   const testMode = !!(opts && opts.testMode);
+  const runId = opts && opts.runId ? opts.runId : null;
 
   try {
+    setStatus_('Connecting to Purchases folder...', 5, runId);
     const purchasesRoot = DriveApp.getFolderById(PURCHASES_FOLDER_ID);
 
+    setStatus_('Prompting for customer number...', 8, runId);
     const custResp = ui.prompt(
       'Customer Number',
       'Enter customer number (example: 103 or #199-1):',
       ui.ButtonSet.OK_CANCEL
     );
-    if (custResp.getSelectedButton() !== ui.Button.OK) return;
+    if (custResp.getSelectedButton() !== ui.Button.OK) {
+      setStatus_('Cancelled by user at customer prompt.', 100, runId);
+      return;
+    }
 
     const customerNumber = (custResp.getResponseText() || '').trim();
     if (!customerNumber) {
       ui.alert('Customer number is required.');
+      setStatus_('Cancelled: customer number missing.', 100, runId);
       return;
     }
 
+    setStatus_('Finding customer folder...', 12, runId);
     const customerFolder = findCustomerPoFolder_(purchasesRoot, customerNumber);
     if (!customerFolder) {
       ui.alert(
         `No customer folder found for ${customerNumber}.\nExpected names like #${customerNumber}-POs or ${customerNumber}-POs`
       );
+      setStatus_('Customer folder not found.', 100, runId);
       return;
     }
 
@@ -81,8 +194,12 @@ function startReportWizardCore_(opts) {
       `Mode: ${testMode ? 'TEST' : 'LIVE'}\n\nUse this customer folder?\n\n${customerFolder.getName()}\n${customerFolder.getUrl()}`,
       ui.ButtonSet.YES_NO
     );
-    if (confirmFolder !== ui.Button.YES) return;
+    if (confirmFolder !== ui.Button.YES) {
+      setStatus_('Cancelled by user at customer folder confirmation.', 100, runId);
+      return;
+    }
 
+    setStatus_('Prompting SB-20 selection...', 18, runId);
     const sb20Response = ui.alert(
       'SB-20 Items',
       'Does this customer have SB-20 items?',
@@ -91,6 +208,7 @@ function startReportWizardCore_(opts) {
     const hasSb20 = sb20Response === ui.Button.YES;
 
     const generatedFolderName = testMode ? TEST_FOLDER_NAME : LIVE_FOLDER_NAME;
+    setStatus_(`Preparing "${generatedFolderName}" folder...`, 24, runId);
     const generatedReportsFolder = getOrCreateSubfolder_(customerFolder, generatedFolderName);
 
     const templatesToUse = hasSb20
@@ -100,14 +218,19 @@ function startReportWizardCore_(opts) {
           'DTSC': REPORT_TEMPLATES['DTSC'],
         };
 
+    setStatus_('Copying template report files...', 32, runId);
     const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
 
+    setStatus_('Prompting for invoice number(s)...', 38, runId);
     const invResp = ui.prompt(
       'Invoice Number(s)',
       'Enter invoice number(s). Use comma or new line for multiple.\nExample: #199-1-01-08-26',
       ui.ButtonSet.OK_CANCEL
     );
-    if (invResp.getSelectedButton() !== ui.Button.OK) return;
+    if (invResp.getSelectedButton() !== ui.Button.OK) {
+      setStatus_('Cancelled by user at invoice prompt.', 100, runId);
+      return;
+    }
 
     const invoiceInputs = (invResp.getResponseText() || '')
       .split(/[\n,]+/)
@@ -116,9 +239,11 @@ function startReportWizardCore_(opts) {
 
     if (!invoiceInputs.length) {
       ui.alert('No invoice number entered.');
+      setStatus_('Cancelled: no invoice numbers entered.', 100, runId);
       return;
     }
 
+    setStatus_(`Searching ${invoiceInputs.length} invoice folder(s)...`, 45, runId);
     const found = [];
     const notFound = [];
     const processed = [];
@@ -130,14 +255,16 @@ function startReportWizardCore_(opts) {
     });
 
     if (found.length) {
+      setStatus_(`Matched ${found.length} invoice(s).`, 52, runId);
       showInvoiceLinksDialog_(found, testMode);
 
       found.forEach(item => {
+        setStatus_(`Processing invoice ${item.invoiceNo}...`, null, runId);
         const invoiceFileToProcess = testMode
           ? createInvoiceTestCopy_(item.file, generatedReportsFolder, customerNumber)
           : item.file;
 
-        const refreshed = upsertPoSheetsInInvoice_(invoiceFileToProcess.getId(), item.invoiceNo, hasSb20);
+        const refreshed = upsertPoSheetsInInvoice_(invoiceFileToProcess.getId(), item.invoiceNo, hasSb20, runId);
         if (!refreshed) {
           processed.push(`Skipped (missing PO or user cancelled): ${item.invoiceNo}`);
           return;
@@ -169,8 +296,10 @@ function startReportWizardCore_(opts) {
       msg += `\n\nInvoice folder/sheet not found for:\n${notFound.map(x => `• ${x}`).join('\n')}`;
     }
 
+    setStatus_('Finalizing summary...', 98, runId);
     ui.alert(msg);
   } catch (error) {
+    setStatus_(`Error: ${error.message}`, 100, runId);
     ui.alert(`Error: ${error.message}`);
     throw error;
   }
@@ -298,9 +427,10 @@ function createInvoiceTestCopy_(invoiceFile, targetFolder, customerNumber) {
 }
 
 /***** INVOICE TAB REFRESH *****/
-function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20) {
+function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20, runId) {
   const ui = SpreadsheetApp.getUi();
 
+  setStatus_(`Checking for required "PO" tab in ${invoiceNo}...`, null, runId);
   const canContinue = ensurePoSheetExistsOrCancel_(invoiceSpreadsheetId, invoiceNo);
   if (!canContinue) return false;
 
@@ -318,6 +448,7 @@ function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20) {
     if (confirm !== ui.Button.YES) return false;
   }
 
+  setStatus_(`Importing ${targetNames.join(' + ')} into ${invoiceNo}...`, null, runId);
   targetNames.forEach(name => {
     if (name === 'SB20-PO' && !hasSb20) return;
     const oldSheet = targetSs.getSheetByName(name);
@@ -327,6 +458,7 @@ function upsertPoSheetsInInvoice_(invoiceSpreadsheetId, invoiceNo, hasSb20) {
 
   SpreadsheetApp.flush();
   Utilities.sleep(1200);
+  setStatus_(`Freezing formulas to values for ${invoiceNo}...`, null, runId);
   hardPasteValuesInPoSheets_(targetSs, targetNames);
 
   return true;
