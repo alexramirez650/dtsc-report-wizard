@@ -29,12 +29,8 @@ const PO_SHEET_SOURCES = {
 /***** MENU *****/
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('Reports')
+    .createMenu('DTSC Report Wizard')
     .addItem('Open Progress Window', 'openWizardSidebar')
-    .addSeparator()
-    .addItem('Start Report Wizard', 'startReportWizard')
-    .addItem('Start Report Wizard (TEST)', 'startReportWizard_TEST')
-    .addItem('Start Report Wizard (LIVE)', 'startReportWizard_LIVE')
     .addToUi();
 }
 
@@ -555,7 +551,11 @@ function normalizeName_(s) {
 /***** GENERATED REPORT FILES *****/
 function copyAllTemplates_(templates, targetFolder, customerNumber) {
   const result = {};
-  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HH-mm');
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM-dd-yyyy');
+  const rawCustomer = String(customerNumber || '').trim();
+  const customerTag = rawCustomer
+    ? (rawCustomer.startsWith('#') ? rawCustomer : `#${rawCustomer}`)
+    : '';
 
   Object.keys(templates).forEach((reportKey) => {
     const url = templates[reportKey];
@@ -563,7 +563,9 @@ function copyAllTemplates_(templates, targetFolder, customerNumber) {
     if (!fileId) return;
 
     const sourceFile = DriveApp.getFileById(fileId);
-    const newName = `${reportKey} - ${customerNumber} - ${stamp}`;
+    const newName = customerTag
+      ? `${customerTag}-${reportKey}-${stamp}`
+      : `${reportKey}-${stamp}`;
     const copy = sourceFile.makeCopy(newName, targetFolder);
     result[reportKey] = copy;
   });
