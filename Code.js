@@ -318,6 +318,12 @@ function startReportWizardCore_(opts) {
       writeDtscAllMonthlyTotals_(reportFilesByKey['DTSC-ALL'], invoiceMonth);
     }
 
+    if (reportFilesByKey['DTSC'] && processedInvoiceNos.length) {
+      setStatus_('Updating DTSC monthly totals...', 93, runId);
+      const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
+      writeDtscMonthlyTotals_(reportFilesByKey['DTSC'], invoiceMonth);
+    }
+
     if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
       setStatus_('Updating NETCOST monthly totals...', 94, runId);
       const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
@@ -462,6 +468,12 @@ function startReportWizardWithInputs_(params, runId) {
     setStatus_('Updating DTSC-ALL monthly totals...', 92, runId);
     const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
     writeDtscAllMonthlyTotals_(reportFilesByKey['DTSC-ALL'], invoiceMonth);
+  }
+
+  if (reportFilesByKey['DTSC'] && processedInvoiceNos.length) {
+    setStatus_('Updating DTSC monthly totals...', 93, runId);
+    const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
+    writeDtscMonthlyTotals_(reportFilesByKey['DTSC'], invoiceMonth);
   }
 
   if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
@@ -1099,6 +1111,34 @@ function writeDtscAllMonthlyTotals_(dtscAllFile, invoiceMonth) {
   }
 
   dtscAllSheet.getRange(targetRow, 2, 1, 13).setValues(totals);
+}
+
+function writeDtscMonthlyTotals_(dtscFile, invoiceMonth) {
+  const reportSs = SpreadsheetApp.openById(dtscFile.getId());
+  const dtscSheet = reportSs.getSheetByName('DTSC');
+  if (!dtscSheet) {
+    throw new Error('DTSC report is missing required "DTSC" sheet.');
+  }
+
+  const totals = dtscSheet.getRange('B20:L20').getValues();
+  const monthCells = dtscSheet.getRange('A25:A36').getDisplayValues();
+
+  let targetRow = null;
+  for (let i = 0; i < monthCells.length; i++) {
+    const labelMonth = monthLabelToNumber_(monthCells[i][0]);
+    if (labelMonth === invoiceMonth) {
+      targetRow = 25 + i;
+      break;
+    }
+  }
+
+  if (!targetRow) {
+    throw new Error(
+      `Could not find month row for ${monthNumberToName_(invoiceMonth)} in DTSC!A25:A36.`
+    );
+  }
+
+  dtscSheet.getRange(targetRow, 2, 1, 11).setValues(totals);
 }
 
 /***** UI HELPERS *****/
