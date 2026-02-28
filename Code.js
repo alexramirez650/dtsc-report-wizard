@@ -265,6 +265,7 @@ function startReportWizardCore_(opts) {
     const found = [];
     const notFound = [];
     const processed = [];
+    const processedInvoiceNos = [];
 
     invoiceInputs.forEach((invoiceNo) => {
       const match = findInvoiceSheetInPurchases_(purchasesRoot, invoiceNo, customerNumber);
@@ -295,8 +296,15 @@ function startReportWizardCore_(opts) {
           hasSb20
         );
 
+        processedInvoiceNos.push(item.invoiceNo);
         processed.push(`${item.invoiceNo} -> ${imported.join(', ') || 'No import tabs found'}`);
       });
+    }
+
+    if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
+      setStatus_('Updating NETCOST monthly totals...', 94, runId);
+      const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
+      writeNetcostMonthlyTotals_(reportFilesByKey['NETCOST'], invoiceMonth);
     }
 
     const copiedReportKeys = Object.keys(reportFilesByKey);
@@ -366,6 +374,7 @@ function startReportWizardWithInputs_(params, runId) {
   const found = [];
   const notFound = [];
   const processed = [];
+  const processedInvoiceNos = [];
 
   invoiceInputs.forEach((invoiceNo) => {
     const match = findInvoiceSheetForCustomer_(
@@ -416,8 +425,15 @@ function startReportWizardWithInputs_(params, runId) {
         hasSb20
       );
 
+      processedInvoiceNos.push(item.invoiceNo);
       processed.push(`${item.invoiceNo} -> ${imported.join(', ') || 'No import tabs found'}`);
     });
+  }
+
+  if (hasSb20 && reportFilesByKey['NETCOST'] && processedInvoiceNos.length) {
+    setStatus_('Updating NETCOST monthly totals...', 94, runId);
+    const invoiceMonth = resolveSingleInvoiceMonth_(processedInvoiceNos);
+    writeNetcostMonthlyTotals_(reportFilesByKey['NETCOST'], invoiceMonth);
   }
 
   const copiedReportKeys = Object.keys(reportFilesByKey);
@@ -794,6 +810,143 @@ function sanitizeTabSuffix_(text) {
   return String(text || '')
     .replace(/[\\\/\?\*\[\]:]/g, '-')
     .trim();
+}
+
+function resolveSingleInvoiceMonth_(invoiceNumbers) {
+  const months = new Set();
+
+  (invoiceNumbers || []).forEach((invoiceNo) => {
+    const month = parseInvoiceMonth_(invoiceNo);
+    if (!month) {
+      throw new Error(
+        `Could not parse month from invoice "${invoiceNo}". Expected format like #199-1-01-08-26.`
+      );
+    }
+    months.add(month);
+  });
+
+  if (!months.size) {
+    throw new Error('No invoice month found for NETCOST monthly update.');
+  }
+
+  if (months.size > 1) {
+    const monthNames = Array.from(months)
+      .sort((a, b) => a - b)
+      .map(monthNumberToName_)
+      .join(', ');
+    throw new Error(
+      `Multiple invoice months found (${monthNames}). Run one month at a time for monthly reports.`
+    );
+  }
+
+  return Array.from(months)[0];
+}
+
+function parseInvoiceMonth_(invoiceNo) {
+  const raw = String(invoiceNo || '').trim();
+  if (!raw) return null;
+
+  const parts = raw.split('-').map(p => p.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+
+  const monthToken = parts[parts.length - 3];
+  if (!/^\d{1,2}$/.test(monthToken)) return null;
+
+  const month = Number(monthToken);
+  if (month < 1 || month > 12) return null;
+
+  return month;
+}
+
+function monthNumberToName_(monthNumber) {
+  const names = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+  return names[monthNumber - 1] || '';
+}
+
+function monthLabelToNumber_(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  if (/^\d{1,2}$/.test(raw)) {
+    const numeric = Number(raw);
+    return numeric >= 1 && numeric <= 12 ? numeric : null;
+  }
+
+  const normalized = raw.toLowerCase();
+  const map = {
+    jan: 1,
+    january: 1,
+    feb: 2,
+    february: 2,
+    mar: 3,
+    march: 3,
+    apr: 4,
+    april: 4,
+    may: 5,
+    jun: 6,
+    june: 6,
+    jul: 7,
+    july: 7,
+    aug: 8,
+    august: 8,
+    sep: 9,
+    sept: 9,
+    september: 9,
+    oct: 10,
+    october: 10,
+    nov: 11,
+    november: 11,
+    dec: 12,
+    december: 12,
+  };
+
+  if (map[normalized]) return map[normalized];
+
+  const cleaned = normalized.replace(/[^a-z]/g, '');
+  if (map[cleaned]) return map[cleaned];
+
+  return null;
+}
+
+function writeNetcostMonthlyTotals_(netcostFile, invoiceMonth) {
+  const reportSs = SpreadsheetApp.openById(netcostFile.getId());
+  const netcostSheet = reportSs.getSheetByName('NETCOST');
+  if (!netcostSheet) {
+    throw new Error('NETCOST report is missing required "NETCOST" sheet.');
+  }
+
+  const totals = netcostSheet.getRange('B20:R20').getValues();
+  const monthCells = netcostSheet.getRange('A25:A36').getDisplayValues();
+
+  let targetRow = null;
+  for (let i = 0; i < monthCells.length; i++) {
+    const labelMonth = monthLabelToNumber_(monthCells[i][0]);
+    if (labelMonth === invoiceMonth) {
+      targetRow = 25 + i;
+      break;
+    }
+  }
+
+  if (!targetRow) {
+    throw new Error(
+      `Could not find month row for ${monthNumberToName_(invoiceMonth)} in NETCOST!A25:A36.`
+    );
+  }
+
+  netcostSheet.getRange(targetRow, 2, 1, 17).setValues(totals);
 }
 
 /***** UI HELPERS *****/
