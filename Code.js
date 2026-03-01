@@ -433,12 +433,16 @@ function startReportWizardWithInputs_(params, runId) {
     .split(/[\n,]+/)
     .map(s => s.trim())
     .filter(Boolean);
+  const invoiceLinkInputs = String(params.invoiceLinks || '')
+    .split(/[\n,]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
 
   if (!customerNumber) {
     throw new Error('Customer Number is required.');
   }
-  if (!invoiceInputs.length) {
-    throw new Error('At least one Invoice Number is required.');
+  if (!invoiceInputs.length && !invoiceLinkInputs.length) {
+    throw new Error('At least one Invoice Number or Invoice Link is required.');
   }
 
   setStatus_('Connecting to Purchases folder...', 5, runId);
@@ -464,11 +468,32 @@ function startReportWizardWithInputs_(params, runId) {
   setStatus_('Copying template report files...', 32, runId);
   const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
 
-  setStatus_(`Searching ${invoiceInputs.length} invoice folder(s)...`, 45, runId);
+  setStatus_(`Resolving ${invoiceInputs.length + invoiceLinkInputs.length} invoice input(s)...`, 45, runId);
   const found = [];
   const notFound = [];
   const processed = [];
   const processedInvoiceNos = [];
+
+  invoiceLinkInputs.forEach((linkText) => {
+    const fileId = extractGoogleFileId_(linkText) || parsePossibleDriveFileId_(linkText);
+    if (!fileId) {
+      notFound.push(linkText);
+      return;
+    }
+
+    try {
+      const file = DriveApp.getFileById(fileId);
+      if (file.getMimeType() !== MimeType.GOOGLE_SHEETS) {
+        notFound.push(linkText);
+        return;
+      }
+
+      const invoiceNo = deriveInvoiceNumberForFile_(file, linkText);
+      found.push({ invoiceNo, folder: null, file });
+    } catch (_) {
+      notFound.push(linkText);
+    }
+  });
 
   invoiceInputs.forEach((invoiceNo) => {
     const match = findInvoiceSheetForCustomer_(
@@ -577,6 +602,31 @@ function startReportWizardWithInputs_(params, runId) {
 
   setStatus_('Finalizing summary...', 98, runId);
   setStatus_(summary, 99, runId);
+}
+
+function parsePossibleDriveFileId_(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  return /^[a-zA-Z0-9_-]{20,}$/.test(raw) ? raw : '';
+}
+
+function deriveInvoiceNumberForFile_(file, fallbackText) {
+  const name = String(file && file.getName ? file.getName() : '').trim();
+  const fromName = extractInvoiceNumberFromText_(name);
+  if (fromName) return fromName;
+
+  const fromFallback = extractInvoiceNumberFromText_(fallbackText);
+  if (fromFallback) return fromFallback;
+
+  return name || String(fallbackText || '').trim() || file.getId();
+}
+
+function extractInvoiceNumberFromText_(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+
+  const m = raw.match(/#?\d+-\d+-\d{1,2}-\d{1,2}-(?:\d{2}|20\d{2})/);
+  return m ? m[0] : '';
 }
 
 /***** CUSTOMER FOLDER LOOKUP *****/

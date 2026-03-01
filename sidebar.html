@@ -93,6 +93,10 @@
         <textarea id="invoiceNumbers" placeholder="#199-1-01-08-26&#10;#199-1-01-15-26"></textarea>
         <div class="hint">Use comma or new line for multiple invoices.</div>
 
+        <label for="invoiceLinks">Invoice Link(s) (optional)</label>
+        <textarea id="invoiceLinks" placeholder="https://docs.google.com/spreadsheets/d/...&#10;or paste file IDs"></textarea>
+        <div class="hint">If folder search misses an invoice, paste its Google Sheet link or file ID here.</div>
+
         <div class="row">
           <label for="hasSb20" style="font-weight:normal;display:flex;gap:6px;align-items:center;">
             <input id="hasSb20" type="checkbox" style="width:auto;" />
@@ -223,13 +227,17 @@
       function buildParams() {
         const shared = getSharedInputs();
         const invoiceNumbers = document.getElementById('invoiceNumbers').value.trim();
+        const invoiceLinks = document.getElementById('invoiceLinks').value.trim();
         const hasSb20 = document.getElementById('hasSb20').checked;
-        if (!invoiceNumbers) throw new Error('Invoice Number(s) are required.');
+        if (!invoiceNumbers && !invoiceLinks) {
+          throw new Error('Provide Invoice Number(s) and/or Invoice Link(s).');
+        }
 
         return {
           customerNumber: shared.customerNumber,
           testMode: shared.testMode,
           invoiceNumbers,
+          invoiceLinks,
           hasSb20,
         };
       }
