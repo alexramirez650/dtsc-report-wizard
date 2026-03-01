@@ -666,18 +666,25 @@ function buildInvoiceMatchKeys_(text) {
 
   const variants = new Set([raw]);
   const tokens = raw.split('-').map(t => t.trim()).filter(Boolean);
-  if (tokens.length >= 2) {
-    const year = tokens[tokens.length - 1];
-    if (/^\d{2}$/.test(year)) {
-      const alt = tokens.slice();
-      alt[alt.length - 1] = `20${year}`;
-      variants.add(alt.join('-'));
-    } else if (/^20\d{2}$/.test(year)) {
-      const alt = tokens.slice();
-      alt[alt.length - 1] = year.slice(2);
-      variants.add(alt.join('-'));
-    }
+  const tokenShapes = [];
+  if (tokens.length) {
+    tokenShapes.push(tokens);
+    tokenShapes.push(tokens.map(normalizeInvoiceToken_));
   }
+
+  const shapeSeen = new Set();
+  tokenShapes.forEach((shape) => {
+    const sig = shape.join('|');
+    if (shapeSeen[sig]) return;
+    shapeSeen[sig] = true;
+
+    addInvoiceYearVariants_(shape, variants);
+
+    if (shape.length >= 3) {
+      const dateOnly = shape.slice(shape.length - 3);
+      addInvoiceYearVariants_(dateOnly, variants);
+    }
+  });
 
   const keys = new Set();
   variants.forEach((value) => {
@@ -688,6 +695,39 @@ function buildInvoiceMatchKeys_(text) {
   });
 
   return Array.from(keys);
+}
+
+function normalizeInvoiceToken_(token) {
+  const value = String(token || '').trim();
+  if (!value) return value;
+
+  if (/^\d+$/.test(value)) {
+    return String(Number(value));
+  }
+
+  if (/^#\d+$/.test(value)) {
+    return `#${Number(value.slice(1))}`;
+  }
+
+  return value;
+}
+
+function addInvoiceYearVariants_(tokens, outSet) {
+  const base = (tokens || []).join('-');
+  if (!base) return;
+  outSet.add(base);
+
+  if (!tokens || !tokens.length) return;
+  const year = String(tokens[tokens.length - 1] || '').trim();
+  if (/^\d{2}$/.test(year)) {
+    const alt = tokens.slice();
+    alt[alt.length - 1] = `20${year}`;
+    outSet.add(alt.join('-'));
+  } else if (/^20\d{2}$/.test(year)) {
+    const alt = tokens.slice();
+    alt[alt.length - 1] = year.slice(2);
+    outSet.add(alt.join('-'));
+  }
 }
 
 function isInvoiceFolderNameMatch_(folderName, invoiceNumber, targetKeys) {
