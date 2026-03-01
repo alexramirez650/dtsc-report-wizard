@@ -640,13 +640,12 @@ function findInvoiceSheetInCustomerFolderRecursive_(customerFolder, invoiceNumbe
 }
 
 function collectInvoiceFoldersByMatchRecursive_(folder, invoiceNumber, out) {
-  const targetNorm = normalizeName_(invoiceNumber);
-  const targetNoHash = targetNorm.replace(/^#/, '');
-  collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targetNorm, targetNoHash, out);
+  const targetKeys = buildInvoiceMatchKeys_(invoiceNumber);
+  collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targetKeys, out);
 }
 
-function collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targetNorm, targetNoHash, out) {
-  if (isInvoiceFolderNameMatch_(folder.getName(), invoiceNumber, targetNorm, targetNoHash)) {
+function collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targetKeys, out) {
+  if (isInvoiceFolderNameMatch_(folder.getName(), invoiceNumber, targetKeys)) {
     out.push(folder);
   }
 
@@ -655,23 +654,60 @@ function collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targ
     collectInvoiceFoldersByMatchRecursiveInner_(
       subfolders.next(),
       invoiceNumber,
-      targetNorm,
-      targetNoHash,
+      targetKeys,
       out
     );
   }
 }
 
-function isInvoiceFolderNameMatch_(folderName, invoiceNumber, targetNorm, targetNoHash) {
+function buildInvoiceMatchKeys_(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+
+  const variants = new Set([raw]);
+  const tokens = raw.split('-').map(t => t.trim()).filter(Boolean);
+  if (tokens.length >= 2) {
+    const year = tokens[tokens.length - 1];
+    if (/^\d{2}$/.test(year)) {
+      const alt = tokens.slice();
+      alt[alt.length - 1] = `20${year}`;
+      variants.add(alt.join('-'));
+    } else if (/^20\d{2}$/.test(year)) {
+      const alt = tokens.slice();
+      alt[alt.length - 1] = year.slice(2);
+      variants.add(alt.join('-'));
+    }
+  }
+
+  const keys = new Set();
+  variants.forEach((value) => {
+    const norm = normalizeName_(value);
+    if (!norm) return;
+    keys.add(norm);
+    keys.add(norm.replace(/^#/, ''));
+  });
+
+  return Array.from(keys);
+}
+
+function isInvoiceFolderNameMatch_(folderName, invoiceNumber, targetKeys) {
   if (String(folderName || '') === String(invoiceNumber || '')) return true;
 
   const folderNorm = normalizeName_(folderName);
-  if (!folderNorm || !targetNorm) return false;
+  if (!folderNorm || !targetKeys || !targetKeys.length) return false;
   const folderNoHash = folderNorm.replace(/^#/, '');
+  const folderKeys = [folderNorm, folderNoHash];
 
-  if (folderNorm === targetNorm || folderNoHash === targetNoHash) return true;
-  if (folderNorm.startsWith(targetNorm) || folderNoHash.startsWith(targetNoHash)) return true;
-  if (folderNorm.includes(targetNorm) || folderNoHash.includes(targetNoHash)) return true;
+  for (let i = 0; i < folderKeys.length; i++) {
+    const folderKey = folderKeys[i];
+    for (let j = 0; j < targetKeys.length; j++) {
+      const targetKey = targetKeys[j];
+      if (!targetKey) continue;
+      if (folderKey === targetKey) return true;
+      if (folderKey.startsWith(targetKey)) return true;
+      if (folderKey.includes(targetKey)) return true;
+    }
+  }
 
   return false;
 }
@@ -681,15 +717,32 @@ function scoreInvoiceFolderNameMatch_(folderName, invoiceNumber) {
   const rawInvoice = String(invoiceNumber || '');
   if (rawFolder === rawInvoice) return 100;
 
-  const targetNorm = normalizeName_(invoiceNumber);
-  const targetNoHash = targetNorm.replace(/^#/, '');
+  const targetKeys = buildInvoiceMatchKeys_(invoiceNumber);
   const folderNorm = normalizeName_(folderName);
-  const folderNoHash = folderNorm.replace(/^#/, '');
+  const folderNoHash = folderNorm ? folderNorm.replace(/^#/, '') : '';
+  const folderKeys = [folderNorm, folderNoHash].filter(Boolean);
 
-  if (!folderNorm || !targetNorm) return 0;
-  if (folderNorm === targetNorm || folderNoHash === targetNoHash) return 90;
-  if (folderNorm.startsWith(targetNorm) || folderNoHash.startsWith(targetNoHash)) return 70;
-  if (folderNorm.includes(targetNorm) || folderNoHash.includes(targetNoHash)) return 50;
+  if (!folderKeys.length || !targetKeys.length) return 0;
+
+  let score = 0;
+  for (let i = 0; i < folderKeys.length; i++) {
+    const folderKey = folderKeys[i];
+    for (let j = 0; j < targetKeys.length; j++) {
+      const targetKey = targetKeys[j];
+      if (!targetKey) continue;
+
+      if (folderKey === targetKey) return 90;
+      if (folderKey.startsWith(targetKey)) {
+        score = Math.max(score, 70);
+        continue;
+      }
+      if (folderKey.includes(targetKey)) {
+        score = Math.max(score, 50);
+      }
+    }
+  }
+
+  if (score > 0) return score;
   return 0;
 }
 
