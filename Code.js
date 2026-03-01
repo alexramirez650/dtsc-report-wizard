@@ -603,11 +603,11 @@ function findCustomerPoFolder_(purchasesRoot, customerNumber) {
 /***** INVOICE LOOKUP (SEARCH FROM PURCHASES ROOT) *****/
 function findInvoiceSheetInPurchases_(purchasesRoot, invoiceNumber, customerNumber) {
   const matches = [];
-  collectFoldersByExactNameRecursive_(purchasesRoot, invoiceNumber, matches);
+  collectInvoiceFoldersByMatchRecursive_(purchasesRoot, invoiceNumber, matches);
 
   if (!matches.length) return null;
 
-  const preferred = pickBestInvoiceFolderMatch_(matches, customerNumber) || matches[0];
+  const preferred = pickBestInvoiceFolderMatch_(matches, customerNumber, invoiceNumber) || matches[0];
   const sheetFile = findInvoiceSheetInFolder_(preferred, invoiceNumber);
   if (!sheetFile) return null;
 
@@ -629,33 +629,88 @@ function findInvoiceSheetForCustomer_(customerFolder, purchasesRoot, invoiceNumb
 
 function findInvoiceSheetInCustomerFolderRecursive_(customerFolder, invoiceNumber) {
   const matches = [];
-  collectFoldersByExactNameRecursive_(customerFolder, invoiceNumber, matches);
+  collectInvoiceFoldersByMatchRecursive_(customerFolder, invoiceNumber, matches);
   if (!matches.length) return null;
 
-  const invoiceFolder = matches[0];
+  const invoiceFolder = pickBestInvoiceFolderMatch_(matches, '', invoiceNumber) || matches[0];
   const sheetFile = findInvoiceSheetInFolder_(invoiceFolder, invoiceNumber);
   if (!sheetFile) return null;
 
   return { folder: invoiceFolder, file: sheetFile };
 }
 
-function collectFoldersByExactNameRecursive_(folder, exactName, out) {
-  if (folder.getName() === exactName) out.push(folder);
+function collectInvoiceFoldersByMatchRecursive_(folder, invoiceNumber, out) {
+  const targetNorm = normalizeName_(invoiceNumber);
+  const targetNoHash = targetNorm.replace(/^#/, '');
+  collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targetNorm, targetNoHash, out);
+}
+
+function collectInvoiceFoldersByMatchRecursiveInner_(folder, invoiceNumber, targetNorm, targetNoHash, out) {
+  if (isInvoiceFolderNameMatch_(folder.getName(), invoiceNumber, targetNorm, targetNoHash)) {
+    out.push(folder);
+  }
 
   const subfolders = folder.getFolders();
   while (subfolders.hasNext()) {
-    collectFoldersByExactNameRecursive_(subfolders.next(), exactName, out);
+    collectInvoiceFoldersByMatchRecursiveInner_(
+      subfolders.next(),
+      invoiceNumber,
+      targetNorm,
+      targetNoHash,
+      out
+    );
   }
 }
 
-function pickBestInvoiceFolderMatch_(folders, customerNumber) {
-  if (!customerNumber) return null;
+function isInvoiceFolderNameMatch_(folderName, invoiceNumber, targetNorm, targetNoHash) {
+  if (String(folderName || '') === String(invoiceNumber || '')) return true;
+
+  const folderNorm = normalizeName_(folderName);
+  if (!folderNorm || !targetNorm) return false;
+  const folderNoHash = folderNorm.replace(/^#/, '');
+
+  if (folderNorm === targetNorm || folderNoHash === targetNoHash) return true;
+  if (folderNorm.startsWith(targetNorm) || folderNoHash.startsWith(targetNoHash)) return true;
+  if (folderNorm.includes(targetNorm) || folderNoHash.includes(targetNoHash)) return true;
+
+  return false;
+}
+
+function scoreInvoiceFolderNameMatch_(folderName, invoiceNumber) {
+  const rawFolder = String(folderName || '');
+  const rawInvoice = String(invoiceNumber || '');
+  if (rawFolder === rawInvoice) return 100;
+
+  const targetNorm = normalizeName_(invoiceNumber);
+  const targetNoHash = targetNorm.replace(/^#/, '');
+  const folderNorm = normalizeName_(folderName);
+  const folderNoHash = folderNorm.replace(/^#/, '');
+
+  if (!folderNorm || !targetNorm) return 0;
+  if (folderNorm === targetNorm || folderNoHash === targetNoHash) return 90;
+  if (folderNorm.startsWith(targetNorm) || folderNoHash.startsWith(targetNoHash)) return 70;
+  if (folderNorm.includes(targetNorm) || folderNoHash.includes(targetNoHash)) return 50;
+  return 0;
+}
+
+function pickBestInvoiceFolderMatch_(folders, customerNumber, invoiceNumber) {
   const normCustomer = normalizeName_(customerNumber).replace(/^#/, '');
+  let best = null;
+  let bestScore = -1;
 
   for (let i = 0; i < folders.length; i++) {
-    if (folderPathContainsCustomer_(folders[i], normCustomer)) return folders[i];
+    const folder = folders[i];
+    const nameScore = scoreInvoiceFolderNameMatch_(folder.getName(), invoiceNumber);
+    const customerBonus = normCustomer && folderPathContainsCustomer_(folder, normCustomer) ? 10 : 0;
+    const score = nameScore + customerBonus;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = folder;
+    }
   }
-  return null;
+
+  return best;
 }
 
 function folderPathContainsCustomer_(folder, normCustomer) {
@@ -945,24 +1000,49 @@ function parseInvoiceMonthYear_(invoiceNo) {
   if (!raw) return null;
 
   const parts = raw.split('-').map(p => p.trim()).filter(Boolean);
-  if (parts.length < 3) return null;
+  if (!parts.length) return null;
 
-  const monthToken = parts[parts.length - 3];
+  const parseYearToken = (token) => {
+    if (!/^\d{2,4}$/.test(token)) return null;
+    const yearNum = Number(token);
+    if (Number.isNaN(yearNum)) return null;
+    const year = token.length === 2 ? 2000 + yearNum : yearNum;
+    return year >= 2000 && year <= 2099 ? year : null;
+  };
+
+  const parseMonthToken = (token) => {
+    if (!/^\d{1,2}$/.test(token)) return null;
+    const month = Number(token);
+    return month >= 1 && month <= 12 ? month : null;
+  };
+
+  const parseDayToken = (token) => {
+    if (!/^\d{1,2}$/.test(token)) return null;
+    const day = Number(token);
+    return day >= 1 && day <= 31 ? day : null;
+  };
+
   const yearToken = parts[parts.length - 1];
+  const year = parseYearToken(yearToken);
+  if (year === null) return null;
 
-  if (!/^\d{1,2}$/.test(monthToken)) return null;
-  if (!/^\d{2,4}$/.test(yearToken)) return null;
+  const prevToken = parts.length >= 2 ? parts[parts.length - 2] : '';
+  const prevPrevToken = parts.length >= 3 ? parts[parts.length - 3] : '';
 
-  const month = Number(monthToken);
-  if (month < 1 || month > 12) return null;
+  const monthBeforeYear = parseMonthToken(prevToken);
+  if (monthBeforeYear !== null) {
+    return { month: monthBeforeYear, year };
+  }
 
-  const yearNum = Number(yearToken);
-  if (Number.isNaN(yearNum)) return null;
-  const year = yearToken.length === 2 ? 2000 + yearNum : yearNum;
+  const dayBeforeYear = parseDayToken(prevToken);
+  if (dayBeforeYear !== null) {
+    const monthBeforeDay = parseMonthToken(prevPrevToken);
+    if (monthBeforeDay !== null) {
+      return { month: monthBeforeDay, year };
+    }
+  }
 
-  if (year < 2000 || year > 2099) return null;
-
-  return { month, year };
+  return null;
 }
 
 function resolveSingleInvoicePeriodForNaming_(invoiceNumbers) {
@@ -1142,14 +1222,16 @@ function findMostRecentPreviousReportFile_(
     candidateFolders.push(currentGeneratedFolder);
   }
 
-  const allFolders = customerFolder.getFolders();
-  while (allFolders.hasNext()) {
-    const folder = allFolders.next();
-    if (currentGeneratedFolder && folder.getId() === currentGeneratedFolder.getId()) continue;
-    if (isGeneratedReportsFolderCandidate_(folder.getName(), customerTag, testMode)) {
-      candidateFolders.push(folder);
-    }
-  }
+  const allGeneratedFolders = collectGeneratedReportFoldersRecursive_(
+    customerFolder,
+    customerTag,
+    testMode,
+    { maxFolders: 5000, maxDepth: 30 }
+  );
+  allGeneratedFolders.forEach((folder) => {
+    if (currentGeneratedFolder && folder.getId() === currentGeneratedFolder.getId()) return;
+    candidateFolders.push(folder);
+  });
 
   let best = null;
 
@@ -1190,6 +1272,43 @@ function isGeneratedReportsFolderCandidate_(folderName, customerTag, testMode) {
   if (name === taggedBase || name.startsWith(`${taggedBase} - `)) return true;
 
   return false;
+}
+
+function collectGeneratedReportFoldersRecursive_(rootFolder, customerTag, testMode, options) {
+  const opts = options || {};
+  const maxFolders = Number(opts.maxFolders || 5000);
+  const maxDepth = Number(opts.maxDepth || 30);
+
+  const result = [];
+  const seen = {};
+  const stack = [{ folder: rootFolder, depth: 0 }];
+  let scanned = 0;
+
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || !node.folder) continue;
+
+    const folder = node.folder;
+    const depth = node.depth;
+    const folderId = folder.getId();
+    if (seen[folderId]) continue;
+    seen[folderId] = true;
+
+    if (depth > 0 && isGeneratedReportsFolderCandidate_(folder.getName(), customerTag, testMode)) {
+      result.push(folder);
+    }
+
+    if (depth >= maxDepth || scanned >= maxFolders) continue;
+
+    const subfolders = folder.getFolders();
+    while (subfolders.hasNext()) {
+      stack.push({ folder: subfolders.next(), depth: depth + 1 });
+      scanned += 1;
+      if (scanned >= maxFolders) break;
+    }
+  }
+
+  return result;
 }
 
 function parseReportFilePeriodAndKey_(fileName) {
@@ -1323,14 +1442,12 @@ function collectReportFilesForCompile_(customerFolder, customerTag, testMode, re
   const matches = [];
   const seen = {};
 
-  const folders = [];
-  const top = customerFolder.getFolders();
-  while (top.hasNext()) {
-    const folder = top.next();
-    if (isGeneratedReportsFolderCandidate_(folder.getName(), customerTag, testMode)) {
-      folders.push(folder);
-    }
-  }
+  const folders = collectGeneratedReportFoldersRecursive_(
+    customerFolder,
+    customerTag,
+    testMode,
+    { maxFolders: 5000, maxDepth: 30 }
+  );
 
   folders.forEach((folder) => {
     const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
