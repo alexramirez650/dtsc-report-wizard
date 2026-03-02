@@ -1172,17 +1172,17 @@ function parseInvoiceMonthYear_(invoiceNo) {
   const prevToken = parts.length >= 2 ? parts[parts.length - 2] : '';
   const prevPrevToken = parts.length >= 3 ? parts[parts.length - 3] : '';
 
-  const monthBeforeYear = parseMonthToken(prevToken);
-  if (monthBeforeYear !== null) {
-    return { month: monthBeforeYear, year };
-  }
-
   const dayBeforeYear = parseDayToken(prevToken);
   if (dayBeforeYear !== null) {
     const monthBeforeDay = parseMonthToken(prevPrevToken);
     if (monthBeforeDay !== null) {
       return { month: monthBeforeDay, year };
     }
+  }
+
+  const monthBeforeYear = parseMonthToken(prevToken);
+  if (monthBeforeYear !== null) {
+    return { month: monthBeforeYear, year };
   }
 
   return null;

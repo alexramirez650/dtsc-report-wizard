@@ -35,6 +35,7 @@ It also supports a separate month-total compile workflow for DTSC-ALL, DTSC, and
 5. Enter:
    - Customer Number
    - Invoice Number(s) (comma or new line)
+   - Invoice date format in invoice number should be `...-MM-DD-YY` or `...-MM-DD-YYYY` for correct month naming (example: `#232-01-02-26` => January 2026)
    - SB-20 checkbox
    - Mode (TEST or LIVE)
 6. Click Start Run.
