@@ -9,10 +9,102 @@ const ENABLE_PURCHASES_WIDE_FALLBACK = false;
 
 // Report templates copied into Generated Reports folder
 const REPORT_TEMPLATES = {
-  'DTSC-ALL': 'https://docs.google.com/spreadsheets/d/1OV_6SjNNC1quXXkysNLdRxPmwYAXvBJUz33EQMG3jtg/edit?gid=308431959#gid=308431959',
+  'ALL_ITEMS': 'https://docs.google.com/spreadsheets/d/1OV_6SjNNC1quXXkysNLdRxPmwYAXvBJUz33EQMG3jtg/edit?gid=1892437006#gid=1892437006',
   'DTSC': 'https://docs.google.com/spreadsheets/d/1QM63U20jXQDHbWvnndL2YY3vD2Ye_EwvXcM1Gqu8Cps/edit?gid=308431959#gid=308431959',
   'NETCOST': 'https://docs.google.com/spreadsheets/d/1ppJeXJCmmFnKYY4YMToX1iWnEJ2T0QDu6u3mbIUaxjo/edit?gid=308431959#gid=308431959',
 };
+
+// Aliases for backward compatibility: old key -> new internal key
+const REPORT_KEY_ALIASES = {
+  'DTSC-ALL': 'ALL_ITEMS',
+};
+
+function normalizeReportKey_(key) {
+  const k = String(key || '').trim().toUpperCase();
+  return REPORT_KEY_ALIASES[k] || k;
+}
+
+// Map canonical internal keys to the short display key used in filenames
+const REPORT_DISPLAY_KEY = {
+  'ALL_ITEMS': 'ALL',
+  'DTSC-ALL': 'ALL',
+  'DTSC': 'DTSC',
+  'NETCOST': 'NETCOST',
+};
+
+// One-time migration: rewrite legacy `DTSC-ALL:` entries in IMPORTED-DATA sheets and user properties
+function runLegacyKeyMigration_() {
+  // Confirm with the user before making Drive / sheet changes
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const resp = ui.alert(
+      'Run Legacy Migration',
+      'This will modify IMPORTED-DATA sheets and user properties in the Purchases folder. Continue?',
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) return;
+  } catch (e) {
+    // If UI isn't available for some reason, continue cautiously.
+  }
+
+  // Migrate user properties keys if present (best-effort)
+  try {
+    const props = PropertiesService.getUserProperties();
+    const all = props.getProperties();
+    Object.keys(all).forEach((p) => {
+      if (!all[p]) return;
+      const v = String(all[p]);
+      if (v.indexOf('DTSC-ALL:') !== -1) {
+        props.setProperty(p, v.replace(/DTSC-ALL:/g, 'ALL_ITEMS:'));
+      }
+    });
+  } catch (e) {
+    // ignore
+  }
+
+  // Migrate IMPORTED-DATA sheets in Purchases folder recursively (best-effort)
+  try {
+    const root = DriveApp.getFolderById(PURCHASES_FOLDER_ID);
+    migrateImportedDataInFolderRecursive_(root);
+  } catch (e) {
+    // ignore
+  }
+}
+
+function migrateImportedDataInFolderRecursive_(folder) {
+  if (!folder) return;
+  const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
+  while (files.hasNext()) {
+    try {
+      const file = files.next();
+      const ss = SpreadsheetApp.openById(file.getId());
+      const sh = ss.getSheetByName('IMPORTED-DATA');
+      if (!sh) continue;
+      const range = sh.getRange('A2:A31');
+      const values = range.getValues();
+      let changed = false;
+      const out = values.map((r) => {
+        const v = String(r[0] || '');
+        if (!v) return [''];
+        if (v.indexOf('DTSC-ALL:') !== -1) {
+          changed = true;
+          return [v.replace(/DTSC-ALL:/g, 'ALL_ITEMS:')];
+        }
+        return [v];
+      });
+      if (changed) {
+        range.setValues(out);
+      }
+    } catch (e) {
+      // skip files we can't open
+    }
+  }
+
+  const subs = folder.getFolders();
+  while (subs.hasNext()) {
+    migrateImportedDataInFolderRecursive_(subs.next());
+  }
+}
 
 // Source tabs used to refresh invoice PO tabs
 const PO_SHEET_SOURCES = {
@@ -32,6 +124,11 @@ function onOpen() {
     .createMenu('DTSC Report Wizard')
     .addItem('Start Report Wizard', 'openWizardSidebar')
     .addToUi();
+  try {
+    runLegacyKeyMigration_();
+  } catch (e) {
+    Logger.log('Migration error: ' + e.message);
+  }
 }
 
 function openWizardSidebar() {
@@ -159,7 +256,7 @@ function listCompileTargetReports(params) {
   const year = Number(safe.year || new Date().getFullYear());
 
   if (!customerNumber || !reportType || Number.isNaN(year)) return [];
-  if (!['DTSC-ALL', 'DTSC', 'NETCOST'].includes(reportType)) return [];
+  if (!['ALL_ITEMS', 'DTSC-ALL', 'DTSC', 'NETCOST'].includes(reportType)) return [];
 
   const purchasesRoot = DriveApp.getFolderById(PURCHASES_FOLDER_ID);
   const customerFolder = findCustomerPoFolder_(purchasesRoot, customerNumber);
@@ -295,12 +392,20 @@ function startReportWizardCore_(opts) {
     const templatesToUse = hasSb20
       ? REPORT_TEMPLATES
       : {
-          'DTSC-ALL': REPORT_TEMPLATES['DTSC-ALL'],
+          'ALL_ITEMS': REPORT_TEMPLATES['ALL_ITEMS'],
           'DTSC': REPORT_TEMPLATES['DTSC'],
         };
 
     setStatus_('Copying template report files...', 32, runId);
     const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
+
+    // Ensure both old and new keys are present for backward compatibility
+    if (reportFilesByKey['DTSC-ALL'] && !reportFilesByKey['ALL_ITEMS']) {
+      reportFilesByKey['ALL_ITEMS'] = reportFilesByKey['DTSC-ALL'];
+    }
+    if (reportFilesByKey['ALL_ITEMS'] && !reportFilesByKey['DTSC-ALL']) {
+      reportFilesByKey['DTSC-ALL'] = reportFilesByKey['ALL_ITEMS'];
+    }
 
     setStatus_('Prompting for invoice number(s)...', 38, runId);
     const invResp = ui.prompt(
@@ -461,12 +566,20 @@ function startReportWizardWithInputs_(params, runId) {
   const templatesToUse = hasSb20
     ? REPORT_TEMPLATES
     : {
-        'DTSC-ALL': REPORT_TEMPLATES['DTSC-ALL'],
+        'ALL_ITEMS': REPORT_TEMPLATES['ALL_ITEMS'],
         'DTSC': REPORT_TEMPLATES['DTSC'],
       };
 
   setStatus_('Copying template report files...', 32, runId);
   const reportFilesByKey = copyAllTemplates_(templatesToUse, generatedReportsFolder, customerNumber);
+
+  // Ensure both old and new keys are present for backward compatibility
+  if (reportFilesByKey['DTSC-ALL'] && !reportFilesByKey['ALL_ITEMS']) {
+    reportFilesByKey['ALL_ITEMS'] = reportFilesByKey['DTSC-ALL'];
+  }
+  if (reportFilesByKey['ALL_ITEMS'] && !reportFilesByKey['DTSC-ALL']) {
+    reportFilesByKey['DTSC-ALL'] = reportFilesByKey['ALL_ITEMS'];
+  }
 
   setStatus_(`Resolving ${invoiceInputs.length + invoiceLinkInputs.length} invoice input(s)...`, 45, runId);
   const found = [];
@@ -899,11 +1012,15 @@ function copyAllTemplates_(templates, targetFolder, customerNumber) {
     if (!fileId) return;
 
     const sourceFile = DriveApp.getFileById(fileId);
+    const canonicalKey = normalizeReportKey_(reportKey);
+    const displayKey = REPORT_DISPLAY_KEY[canonicalKey] || canonicalKey;
     const newName = customerTag
-      ? `${customerTag}-${reportKey}-${stamp}`
-      : `${reportKey}-${stamp}`;
+      ? `${customerTag}-${displayKey}-${stamp}`
+      : `${displayKey}-${stamp}`;
     const copy = sourceFile.makeCopy(newName, targetFolder);
+    // record under both the incoming key and canonical key for compatibility
     result[reportKey] = copy;
+    if (canonicalKey !== reportKey) result[canonicalKey] = copy;
   });
 
   return result;
@@ -1049,6 +1166,7 @@ function hardPasteValuesInPoSheets_(ss, sheetNames) {
 function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, reportFilesByKey, hasSb20) {
   const importedInto = [];
   const importedTabsByReport = {
+    'ALL_ITEMS': [],
     'DTSC-ALL': [],
     'DTSC': [],
     'NETCOST': [],
@@ -1056,12 +1174,12 @@ function importInvoiceTabsToGeneratedReports_(invoiceSpreadsheetId, invoiceNo, r
   const invoiceSs = SpreadsheetApp.openById(invoiceSpreadsheetId);
 
   const poSheet = invoiceSs.getSheetByName('PO');
-  if (poSheet && reportFilesByKey['DTSC-ALL']) {
-    const dtscAllSs = SpreadsheetApp.openById(reportFilesByKey['DTSC-ALL'].getId());
+  if (poSheet && (reportFilesByKey['ALL_ITEMS'] || reportFilesByKey['DTSC-ALL'])) {
+    const dtscAllSs = SpreadsheetApp.openById((reportFilesByKey['ALL_ITEMS'] || reportFilesByKey['DTSC-ALL']).getId());
     const tabName = buildTargetTabName_('PO', invoiceNo);
     copySheetIntoReport_(poSheet, dtscAllSs, tabName);
-    importedTabsByReport['DTSC-ALL'].push(tabName);
-    importedInto.push(`DTSC-ALL:${tabName}`);
+    importedTabsByReport['ALL_ITEMS'].push(tabName);
+    importedInto.push(`ALL_ITEMS:${tabName}`);
   }
 
   const ewasteSheet = invoiceSs.getSheetByName('EWASTE-PO');
@@ -1248,14 +1366,20 @@ function renameReportsByInvoicePeriod_(reportFilesByKey, customerNumber, process
   const periodLabel = `${monthNumberToName_(resolved.period.month)}-${resolved.period.year}`;
   const customerTag = buildCustomerTag_(customerNumber);
 
+  const handled = {};
   Object.keys(reportFilesByKey || {}).forEach((reportKey) => {
-    const reportFile = reportFilesByKey[reportKey];
+    const canonical = normalizeReportKey_(reportKey);
+    if (handled[canonical]) return;
+
+    const reportFile = reportFilesByKey[canonical] || reportFilesByKey[reportKey];
     if (!reportFile) return;
 
+    const displayKey = REPORT_DISPLAY_KEY[canonical] || canonical;
     const newName = customerTag
-      ? `${customerTag}-${reportKey}-${periodLabel}`
-      : `${reportKey}-${periodLabel}`;
+      ? `${customerTag}-${displayKey}-${periodLabel}`
+      : `${displayKey}-${periodLabel}`;
     reportFile.setName(newName);
+    handled[canonical] = true;
   });
 
   return {
@@ -1458,7 +1582,7 @@ function parseReportFilePeriodAndKey_(fileName) {
   const text = String(fileName || '').trim();
   const monthRegex =
     '(January|February|March|April|May|June|July|August|September|October|November|December)';
-  const keyRegex = '(DTSC-ALL|DTSC|NETCOST)';
+  const keyRegex = '(ALL_ITEMS|DTSC-ALL|DTSC|NETCOST)';
   const re = new RegExp(`${keyRegex}-${monthRegex}-(\\d{4})$`, 'i');
   const match = text.match(re);
   if (!match) return null;
@@ -1480,7 +1604,8 @@ function parseReportFilePeriodAndKey_(fileName) {
 function copyPreviousMonthBlockByReportKey_(sourceFile, targetFile, reportKey, currentMonth) {
   const map = {
     'NETCOST': { sheetName: 'NETCOST', startCol: 2, numCols: 17 },
-    'DTSC-ALL': { sheetName: 'DTSC ALL ITEMS', startCol: 2, numCols: 13 },
+    'ALL_ITEMS': { sheetName: 'ALL ITEMS', startCol: 2, numCols: 13 },
+    'DTSC-ALL': { sheetName: 'ALL ITEMS', startCol: 2, numCols: 13 },
     'DTSC': { sheetName: 'DTSC', startCol: 2, numCols: 11 },
   };
 
@@ -1511,8 +1636,8 @@ function compileMonthTotalsWithInputs_(params, runId) {
   const months = normalizeCompileMonths_(safe.months);
 
   if (!customerNumber) throw new Error('Customer Number is required.');
-  if (!['DTSC-ALL', 'DTSC', 'NETCOST'].includes(reportType)) {
-    throw new Error('Report type must be DTSC-ALL, DTSC, or NETCOST.');
+  if (!['ALL_ITEMS', 'DTSC-ALL', 'DTSC', 'NETCOST'].includes(reportType)) {
+    throw new Error('Report type must be ALL_ITEMS (or DTSC-ALL), DTSC, or NETCOST.');
   }
   if (!targetReportId) throw new Error('Target report is required.');
   if (Number.isNaN(year) || year < 2000 || year > 2099) throw new Error('Year is invalid.');
@@ -1643,7 +1768,8 @@ function findReportFileByExactPeriod_(
 function getMonthlyReportConfig_(reportType) {
   const map = {
     'NETCOST': { sheetName: 'NETCOST', startCol: 2, numCols: 17 },
-    'DTSC-ALL': { sheetName: 'DTSC ALL ITEMS', startCol: 2, numCols: 13 },
+    'ALL_ITEMS': { sheetName: 'ALL ITEMS', startCol: 2, numCols: 13 },
+    'DTSC-ALL': { sheetName: 'ALL ITEMS', startCol: 2, numCols: 13 },
     'DTSC': { sheetName: 'DTSC', startCol: 2, numCols: 11 },
   };
   return map[reportType] || null;
@@ -1806,9 +1932,9 @@ function writeNetcostMonthlyTotals_(netcostFile, invoiceMonth) {
 
 function writeDtscAllMonthlyTotals_(dtscAllFile, invoiceMonth) {
   const reportSs = SpreadsheetApp.openById(dtscAllFile.getId());
-  const dtscAllSheet = reportSs.getSheetByName('DTSC ALL ITEMS');
+  const dtscAllSheet = reportSs.getSheetByName('ALL ITEMS');
   if (!dtscAllSheet) {
-    throw new Error('DTSC-ALL report is missing required "DTSC ALL ITEMS" sheet.');
+    throw new Error('ALL Items Report is missing required "ALL ITEMS" sheet.');
   }
 
   const totals = dtscAllSheet.getRange('B20:N20').getValues();
@@ -1825,7 +1951,7 @@ function writeDtscAllMonthlyTotals_(dtscAllFile, invoiceMonth) {
 
   if (!targetRow) {
     throw new Error(
-      `Could not find month row for ${monthNumberToName_(invoiceMonth)} in DTSC ALL ITEMS!A25:A36.`
+      `Could not find month row for ${monthNumberToName_(invoiceMonth)} in ALL ITEMS!A25:A36.`
     );
   }
 

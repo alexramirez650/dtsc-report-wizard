@@ -2,14 +2,14 @@
 
 This Google Sheets Apps Script helps generate DTSC report files and import invoice tab data automatically.
 
-It also supports a separate month-total compile workflow for DTSC-ALL, DTSC, and NETCOST.
+It also supports a separate month-total compile workflow for ALL Items Report (internal key `ALL_ITEMS`), DTSC, and NETCOST.
 
 ## What this tool does
 
 1. Finds the customer folder in Purchases.
 2. Creates/uses a Generated Reports folder.
 3. Copies report templates:
-   - DTSC-ALL
+   - ALL Items Report (internal key `ALL_ITEMS`)
    - DTSC
    - NETCOST (only when SB-20 is checked)
 4. Finds invoice files by invoice folder name.
@@ -19,7 +19,7 @@ It also supports a separate month-total compile workflow for DTSC-ALL, DTSC, and
    - SB20-PO (only when SB-20 is checked)
 7. Freezes those tabs to values.
 8. Sends tabs into generated report files using this mapping:
-   - PO -> DTSC-ALL
+   - PO -> ALL Items Report (internal key `ALL_ITEMS`)
    - EWASTE-PO -> DTSC
    - SB20-PO -> NETCOST
 9. Updates IMPORTED-DATA in each report:
@@ -51,7 +51,7 @@ Use this when you want to fill month rows from existing monthly report files.
 3. Enter/select:
    - Customer Number
    - Mode (TEST or LIVE)
-   - Report Type (DTSC-ALL, DTSC, NETCOST)
+   - Report Type (ALL Items Report / `ALL_ITEMS`, DTSC, NETCOST)
    - Report Year
 4. Click Load Report Files.
 5. Pick the target report file.
@@ -69,7 +69,7 @@ Use this when you want to fill month rows from existing monthly report files.
 ### Monthly ranges used
 
 - NETCOST: source `B20:R20` -> month row in `B25:R36` (month labels in `A25:A36`)
-- DTSC-ALL (`DTSC ALL ITEMS`): source `B20:N20` -> month row in `B25:N36` (month labels in `A25:A36`)
+ - ALL Items Report (`ALL ITEMS`): source `B20:N20` -> month row in `B25:N36` (month labels in `A25:A36`)
 - DTSC (`DTSC`): source `B20:L20` -> month row in `B25:L36` (month labels in `A25:A36`)
 
 ## TEST vs LIVE
@@ -125,10 +125,10 @@ Use this short version in a Sheet note/tab:
 - Select TEST (safe) or LIVE (real updates)
 - Watch progress/logs in realtime
 
-Mapping:
-- PO -> DTSC-ALL
-- EWASTE-PO -> DTSC
-- SB20-PO -> NETCOST
+- Mapping:
+- PO -> ALL Items Report (internal key `ALL_ITEMS`)
+ - EWASTE-PO -> DTSC
+ - SB20-PO -> NETCOST
 
 IMPORTED-DATA:
 - Imported tab names are written to A2:A31
